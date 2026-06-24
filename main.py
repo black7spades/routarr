@@ -327,7 +327,14 @@ _LOGIN_CSS = (
 
     'body{font-family:system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#09090e}'
 
-    '#bg{position:fixed;inset:0;background-size:cover;background-position:center;filter:brightness(.22) saturate(.6);z-index:0;transition:background-image .5s}'
+    '.kb-layer{position:fixed;inset:0;background-size:cover;background-position:center;filter:brightness(.22) saturate(.6);z-index:0;opacity:0;transition:opacity 2s ease-in-out;will-change:transform,opacity}'
+
+    '.kb-layer.on{opacity:1;animation:kenburns 14s ease-in-out forwards}'
+
+    '@keyframes kenburns{'
+    '0%{transform:scale(1) translate(0%,0%)}'
+    '50%{transform:scale(1.08) translate(-1.5%,-0.8%)}'
+    '100%{transform:scale(1.14) translate(-2.5%,-1.5%)}}'
 
     '.card{position:relative;z-index:1;background:rgba(9,9,14,.72);border:1px solid rgba(117,206,200,.18);border-radius:14px;padding:42px 38px;width:340px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 8px 40px rgba(0,0,0,.65)}'
 
@@ -371,7 +378,8 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         '</head><body>'
 
-        '<div id="bg"></div>'
+        '<div id="bg0" class="kb-layer"></div>'
+        '<div id="bg1" class="kb-layer"></div>'
 
         '<div class="card">'
 
@@ -399,7 +407,20 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         'const _ids=' + idents_js + ';'
 
-        'if(_ids.length){const _bg=document.getElementById("bg");_bg.style.backgroundImage="url("+_ids[Math.floor(Math.random()*_ids.length)]+")";}'  
+        '(function(){'
+        'if(!_ids.length)return;'
+        'const _L=[document.getElementById("bg0"),document.getElementById("bg1")];'
+        'let _a=0,_i=Math.floor(Math.random()*_ids.length);'
+        'function _show(li,url){'
+        'const l=_L[li];l.style.backgroundImage="url("+url+")";'
+        'l.style.animation="none";void l.offsetWidth;l.style.animation="";'
+        'l.classList.add("on");}'
+        'function _next(){'
+        '_i=(_i+1)%_ids.length;'
+        'const n=1-_a;_show(n,_ids[_i]);_L[_a].classList.remove("on");_a=n;}'
+        '_show(0,_ids[_i]);'
+        'setInterval(_next,8000);'
+        '})()'
 
         'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'  
 
@@ -2505,6 +2526,10 @@ async def get_versions():
 
                     if m: out["plex"] = m.group(1)
 
+                    mid = re.search(r'machineIdentifier="([^"]+)"', r.text)
+
+                    if mid: cfg_set({"plex_machine_id": mid.group(1)})
+
             except Exception:
 
                 pass
@@ -4031,9 +4056,9 @@ tr:last-child td{border-bottom:none}tr:hover td{background:rgba(255,255,255,.02)
 
 .chcard:hover{border-color:var(--s3)}
 
-.chcard-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.13;border-radius:8px;pointer-events:none;transition:opacity .2s}
+.chcard-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.28;border-radius:8px;pointer-events:none;transition:opacity .3s}
 
-.chcard:hover .chcard-bg{opacity:.22}
+.chcard:hover .chcard-bg{opacity:.45}
 
 .chcard-content{position:relative;z-index:1;display:flex;flex-direction:column;height:100%}
 
@@ -5345,6 +5370,8 @@ let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSecti
 
 let _channelOverrides = {}, _channelEditRk = null;
 
+let _plexUrl = '', _plexMachineId = '';
+
 let arrSort = {col: 'added', dir: 'desc'};
 
 let arrPage = 0, arrPageSize = 50;
@@ -6285,6 +6312,14 @@ async function loadArrivals(force=false) {
 
   if (force) await fetch('/api/cache/clear');
 
+  if (!_plexMachineId) {
+    try {
+      const s = await (await fetch('/api/settings')).json();
+      _plexUrl = s.plex_url || '';
+      _plexMachineId = s.plex_machine_id || '';
+    } catch(e) {}
+  }
+
   arrPage = 0;
 
   document.getElementById('arr-body').innerHTML = '<div class="loading">Loading&hellip;</div>';
@@ -6621,11 +6656,15 @@ function renderArrivals() {
 
       +'</td>'
 
-      +'<td style="font-weight:600;max-width:260px" title="'+escHtml(item.title)+'">' 
+      +'<td style="font-weight:600;max-width:260px" title="'+escHtml(item.title)+'">'
 
       +'<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
 
-      +escHtml(item.title)+' <span style="color:var(--muted);font-size:12px">'+item.year+'</span>'
+      +(item.source==='plex' && _plexUrl && _plexMachineId
+        ? '<a href="'+escHtml(_plexUrl)+'/web/#!/server/'+escHtml(_plexMachineId)+'/details?key=%2Flibrary%2Fmetadata%2F'+encodeURIComponent(rk)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px solid var(--bdr)" title="Open in Plex">'+escHtml(item.title)+'</a>'
+        : escHtml(item.title))
+
+      +' <span style="color:var(--muted);font-size:12px">'+item.year+'</span>'
 
       +'</div></td>'
 
