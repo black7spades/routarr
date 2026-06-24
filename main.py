@@ -27,6 +27,7 @@ Optional env vars (pre-fill empty settings on first start):
 """
 
 import os, json, re, time, sqlite3, asyncio, paramiko, secrets, hashlib, logging
+from cryptography.fernet import Fernet
 
 from html import unescape
 
@@ -232,7 +233,9 @@ def seed_from_env():
 
             if not row or not row["value"]:
 
-                db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
+                stored = encrypt_setting(v) if k == "ssh_pass" else v
+
+                db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, stored))
 
 
 
@@ -277,6 +280,25 @@ _SESSION_TTL = 86400 * 30  # 30 days
 _login_failures: dict = {}  # ip -> [timestamp, ...]
 _LOGIN_WINDOW = 300         # 5-minute sliding window
 _LOGIN_MAX_FAILS = 10       # block after this many failures in the window
+
+# General rate-limiter used for expensive endpoints (scan, route-all, process)
+_rate_buckets: dict = {}    # (ip, endpoint_key) -> [timestamps]
+
+
+def _rate_ok(ip: str, key: str, max_calls: int, window: int) -> bool:
+    """Return True if the request is within the rate limit, False if it should be blocked.
+
+    Sliding-window counter: we keep a list of timestamps for each (ip, key) pair and
+    count how many fall within the last `window` seconds.
+    """
+    now = time.time()
+    bk = (ip, key)
+    recent = [t for t in _rate_buckets.get(bk, []) if now - t < window]
+    if len(recent) >= max_calls:
+        return False
+    recent.append(now)
+    _rate_buckets[bk] = recent
+    return True
 
 
 def _load_sessions():
@@ -505,6 +527,55 @@ def cfg_set(updates: dict):
 
 
 
+# ── Encryption helpers (for sensitive settings like SSH password) ─────────────
+#
+# We use Fernet symmetric encryption (from the `cryptography` package).
+# The encryption key is randomly generated once per installation and stored in
+# the DB under the private key `_machine_key` (excluded from cfg_all() output).
+# Encrypted values are prefixed with "enc:" so old plaintext values still work.
+
+_machine_key_cache: Optional[bytes] = None
+
+
+def _get_machine_key() -> bytes:
+    global _machine_key_cache
+    if _machine_key_cache:
+        return _machine_key_cache
+    k = cfg("_machine_key")
+    if not k:
+        k = Fernet.generate_key().decode()
+        cfg_set({"_machine_key": k})
+    _machine_key_cache = k.encode()
+    return _machine_key_cache
+
+
+def encrypt_setting(plaintext: str) -> str:
+    """Encrypt a sensitive value. Returns 'enc:<ciphertext>' or '' if empty."""
+    if not plaintext:
+        return ""
+    return "enc:" + Fernet(_get_machine_key()).encrypt(plaintext.encode()).decode()
+
+
+def decrypt_setting(value: str) -> str:
+    """Decrypt a value produced by encrypt_setting. Returns plaintext as-is if not encrypted."""
+    if not value or not value.startswith("enc:"):
+        return value  # backward-compatible: unencrypted value from env or old DB
+    try:
+        return Fernet(_get_machine_key()).decrypt(value[4:].encode()).decode()
+    except Exception:
+        return ""
+
+
+# ── URL validation ────────────────────────────────────────────────────────────
+
+_URL_SETTINGS = {"plex_url", "tunarr_url", "jellyfin_url"}
+
+
+def _valid_url(v: str) -> bool:
+    """A settings URL must be empty (unconfigured) or start with http(s)://."""
+    return not v or v.startswith(("http://", "https://"))
+
+
 # ── Library mapping (Plex section → Tunarr library UUID) ─────────────────────
 
 
@@ -682,11 +753,15 @@ async def plex_get(client, path, params=None):
 
         raise ValueError("Plex URL not configured — go to Settings")
 
+    # Send the token as a header, not a query param, so it doesn't appear in
+    # web server access logs or browser history.
     r = await client.get(
 
         f"{base}{path}",
 
-        params={"X-Plex-Token": cfg("plex_token"), **(params or {})},
+        params=params or {},
+
+        headers={"X-Plex-Token": cfg("plex_token")},
 
         timeout=30,
 
@@ -1362,7 +1437,7 @@ def sftp_patch(channel_id, lineup):
 
         ssh.connect(cfg("ssh_host"), port=22,
 
-                    username=cfg("ssh_user", "root"), password=cfg("ssh_pass"),
+                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
 
                     timeout=15, look_for_keys=False, allow_agent=False)
 
@@ -1470,7 +1545,7 @@ def sftp_write_lineup(channel_id: str, items: list) -> tuple[bool, str]:
 
         ssh.connect(cfg("ssh_host"), port=22,
 
-                    username=cfg("ssh_user", "root"), password=cfg("ssh_pass"),
+                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
 
                     timeout=15, look_for_keys=False, allow_agent=False)
 
@@ -2566,6 +2641,48 @@ class _AuthMW(BaseHTTPMiddleware):
 app.add_middleware(_AuthMW)
 
 
+class _SecurityHeadersMW(BaseHTTPMiddleware):
+    """Attach defensive HTTP headers to every response.
+
+    Think of these like safety labels on a package: they tell the browser
+    extra rules about how to handle the page, reducing the damage if something
+    does go wrong.
+    """
+
+    async def dispatch(self, request, call_next):
+
+        response = await call_next(request)
+
+        # Don't let the browser guess the file type — use what the server declares.
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent this page from being embedded in an iframe on another site
+        # (blocks a category of attack called clickjacking).
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+
+        # Only send the full URL as a "referrer" to our own pages, not to others.
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+        # Content Security Policy: restrict where scripts/styles/images can load from.
+        # 'unsafe-inline' is required because the app uses inline <script> and <style>.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'"
+        )
+
+        # HSTS: tell the browser to always use HTTPS for this site (only sent over HTTPS).
+        if request.url.scheme == "https":
+
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        return response
+
+
+app.add_middleware(_SecurityHeadersMW)
+
 
 def _err(e: Exception) -> JSONResponse:
 
@@ -2577,21 +2694,28 @@ def _err(e: Exception) -> JSONResponse:
 
 async def health():
 
+    plex_url   = cfg("plex_url")
+    plex_token = cfg("plex_token")
+    tunarr_url = cfg("tunarr_url")
+    jf_url     = cfg("jellyfin_url")
+
+    # Each check: (label, url, extra_headers)
+    # Plex token goes in a header so it never appears in any URL/log.
+    checks = [
+
+        ("plex",     f"{plex_url}/identity",         {"X-Plex-Token": plex_token} if plex_token else {}),
+
+        ("tunarr",   f"{tunarr_url}/api/version",    {}),
+
+        ("jellyfin", f"{jf_url}/System/Info/Public", {}),
+
+    ]
+
+    out = {}
+
     async with httpx.AsyncClient() as c:
 
-        out = {}
-
-        checks = [
-
-            ("plex",      f"{cfg('plex_url')}/identity?X-Plex-Token={cfg('plex_token')}"),
-
-            ("tunarr",    f"{cfg('tunarr_url')}/api/version"),
-
-            ("jellyfin",  f"{cfg('jellyfin_url')}/System/Info/Public"),
-
-        ]
-
-        for name, url in checks:
+        for name, url, headers in checks:
 
             if not url.startswith("http"):
 
@@ -2601,7 +2725,7 @@ async def health():
 
             try:
 
-                r = await c.get(url, timeout=5)
+                r = await c.get(url, headers=headers, timeout=5)
 
                 out[name] = "ok" if r.status_code < 400 else "error"
 
@@ -2609,7 +2733,7 @@ async def health():
 
                 out[name] = "down"
 
-        return out
+    return out
 
 
 @app.get("/api/health-log")
@@ -3028,7 +3152,27 @@ async def put_settings(request: Request):
 
     body = await request.json()
 
-    cfg_set({k: v for k, v in body.items() if v != "••••••••"})
+    updates = {}
+
+    for k, v in body.items():
+
+        if v == "••••••••":
+
+            continue  # masked sentinel — user didn't change it, leave DB value alone
+
+        if k in _URL_SETTINGS and not _valid_url(v):
+
+            return JSONResponse(
+
+                {"error": f"'{k}' must start with http:// or https://"},
+
+                status_code=400,
+
+            )
+
+        updates[k] = encrypt_setting(v) if k == "ssh_pass" and v else v
+
+    cfg_set(updates)
 
     cache_clear()
 
@@ -3216,11 +3360,48 @@ async def get_routing():
 
 
 
+def _conflicting_rules(section_id: str, label: str, source: str, exclude_id: int = None) -> list[str]:
+    """Return names of existing rules that match the exact same section+label+source combination.
+
+    An exact match means two rules would always fire for the same items — one of
+    them will silently shadow the other depending on priority.
+    """
+    with db_conn() as db:
+
+        if exclude_id is not None:
+
+            rows = db.execute(
+
+                "SELECT name FROM routing_rules WHERE section_id=? AND label=? AND source=? AND id!=?",
+
+                (section_id, label, source, exclude_id),
+
+            ).fetchall()
+
+        else:
+
+            rows = db.execute(
+
+                "SELECT name FROM routing_rules WHERE section_id=? AND label=? AND source=?",
+
+                (section_id, label, source),
+
+            ).fetchall()
+
+    return [r["name"] for r in rows]
+
+
 @app.post("/api/routing")
 
 async def add_routing(request: Request):
 
     rule = await request.json()
+
+    conflicts = _conflicting_rules(
+
+        rule["section_id"], rule.get("label", ""), rule.get("source", "plex")
+
+    )
 
     with db_conn() as db:
 
@@ -3238,7 +3419,13 @@ async def add_routing(request: Request):
 
         )
 
-    return {"ok": True}
+    result: dict = {"ok": True}
+
+    if conflicts:
+
+        result["warning"] = f"This rule matches the same items as: {', '.join(conflicts)}. The higher-priority rule will win."
+
+    return result
 
 
 
@@ -3262,7 +3449,28 @@ async def update_routing(rule_id: int, request: Request):
 
             db.execute(sql, vals)
 
-    return {"ok": True}
+    result: dict = {"ok": True}
+
+    # Re-read the saved rule to check for conflicts against all other rules
+    if any(f in body for f in ("section_id", "label", "source")):
+
+        with db_conn() as db:
+
+            saved = db.execute("SELECT * FROM routing_rules WHERE id=?", (rule_id,)).fetchone()
+
+        if saved:
+
+            conflicts = _conflicting_rules(
+
+                saved["section_id"], saved["label"], saved["source"], exclude_id=rule_id
+
+            )
+
+            if conflicts:
+
+                result["warning"] = f"This rule matches the same items as: {', '.join(conflicts)}. The higher-priority rule will win."
+
+    return result
 
 
 
@@ -3376,7 +3584,7 @@ async def sftp_sync_counts_ep():
 
         ssh.connect(cfg("ssh_host"), port=22,
 
-                    username=cfg("ssh_user", "root"), password=cfg("ssh_pass"),
+                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
 
                     timeout=15, look_for_keys=False, allow_agent=False)
 
@@ -3644,7 +3852,13 @@ async def scan_status():
 
 @app.post("/api/scan/now")
 
-async def scan_now_ep():
+async def scan_now_ep(request: Request):
+
+    ip = request.client.host if request.client else "unknown"
+
+    if not _rate_ok(ip, "scan", 3, 60):
+
+        return JSONResponse({"error": "Too many scan requests — wait a moment"}, status_code=429)
 
     asyncio.create_task(_run_scan_once())
 
@@ -3674,7 +3888,13 @@ async def mark_done_ep(rk: str, channel_name: str = "dismissed"):
 
 @app.post("/api/route/auto")
 
-async def route_auto(days: int = 14):
+async def route_auto(request: Request, days: int = 14):
+
+    ip = request.client.host if request.client else "unknown"
+
+    if not _rate_ok(ip, "route_auto", 5, 60):
+
+        return JSONResponse({"error": "Too many route requests — wait a moment"}, status_code=429)
 
     try:
 
