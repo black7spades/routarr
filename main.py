@@ -856,6 +856,10 @@ async def plex_new_content(client, days=14):
 
 
 
+        # Collect items that pass the date filter first, then fetch all their
+        # genres in parallel rather than one request at a time.
+        section_attrs = []
+
         for attrs in xml_tags(xml, tag):
 
             added_at = int(attrs.get("addedAt", 0))
@@ -864,7 +868,17 @@ async def plex_new_content(client, days=14):
 
                 break
 
-            genres   = await plex_item_labels(client, attrs["ratingKey"])
+            section_attrs.append(attrs)
+
+        # asyncio.gather fires all the HTTP requests at the same time and
+        # waits for all of them to finish — much faster than sequential awaits.
+        genres_list = await asyncio.gather(
+            *[plex_item_labels(client, a["ratingKey"]) for a in section_attrs]
+        )
+
+        for attrs, genres in zip(section_attrs, genres_list):
+
+            added_at = int(attrs.get("addedAt", 0))
 
             resolved = resolve_channel(sec_id, genres)
 
@@ -2748,9 +2762,21 @@ async def get_channel_idents():
 
 async def proxy_image(url: str):
 
+    # Only proxy images that come from our own configured servers.
+    # Without this check, anyone who can reach the app could trick it into
+    # fetching internal network addresses (routers, other containers, etc.).
+    allowed_bases = [b.rstrip("/") for b in [
+        cfg("plex_url"), cfg("tunarr_url"), cfg("jellyfin_url")
+    ] if b]
+
+    if not allowed_bases or not any(url.startswith(base) for base in allowed_bases):
+
+        return Response(status_code=403)
+
     try:
 
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+        # follow_redirects=False prevents a redirect from bypassing the allowlist above
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as c:
 
             r = await c.get(url)
 
