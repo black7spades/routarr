@@ -4075,6 +4075,39 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 .sync-lbl{font-size:10px;color:var(--muted);white-space:nowrap;letter-spacing:.2px}
 
+@media(max-width:700px){
+  header{height:auto;flex-wrap:wrap;padding:8px 12px;gap:6px;align-items:center}
+  .logo{flex-shrink:0;font-size:15px}
+  nav{order:99;flex:0 0 100%;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px;margin:0 -12px;padding-left:12px}
+  nav::-webkit-scrollbar{height:3px}
+  nav::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:2px}
+  .tab{padding:6px 11px;font-size:12px;white-space:nowrap}
+  #sync-bar{flex:1;min-width:0;padding:0;max-width:240px}
+  .logout-btn{margin-left:auto}
+  .hdr-controls{flex-shrink:0}
+  .status{display:none}
+  .icon-btn{padding:6px}
+  main{padding:12px 10px}
+  .sh{flex-direction:column;gap:8px}
+  .sh>.row{flex-wrap:wrap;gap:6px}
+  .sh>.row .btn,.sh>.row select{flex:1 1 auto;min-width:0}
+  .fg{grid-template-columns:1fr}
+  .fg3{grid-template-columns:1fr}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .modal-box{width:95vw;max-width:none;padding:18px 14px}
+  .scard{padding:16px 14px}
+  .chcard{padding:14px 12px}
+  .card{padding:14px 12px}
+}
+
+@media(max-width:420px){
+  .tab{padding:5px 9px;font-size:11px}
+  .btn{padding:6px 12px;font-size:12px}
+  .sh h2{font-size:16px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+}
+
 </style>
 
 </head>
