@@ -3223,6 +3223,136 @@ async def delete_routing(rule_id: int):
 
 
 
+@app.get("/api/routing/export")
+
+async def export_routing():
+
+    with db_conn() as db:
+
+        rows = db.execute(
+
+            "SELECT name, section_id, label, label_excl, channel_id, channel_name, priority, source"
+
+            " FROM routing_rules ORDER BY priority DESC, id"
+
+        ).fetchall()
+
+    payload = {
+
+        "version": 1,
+
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+
+        "rules": [dict(r) for r in rows],
+
+    }
+
+    import json as _json
+
+    body = _json.dumps(payload, indent=2)
+
+    return Response(
+
+        content=body,
+
+        media_type="application/json",
+
+        headers={"Content-Disposition": 'attachment; filename="routarr-rules.json"'},
+
+    )
+
+
+
+@app.post("/api/routing/import")
+
+async def import_routing(request: Request, mode: str = "merge"):
+
+    if mode not in ("merge", "replace"):
+
+        return JSONResponse({"error": "mode must be 'merge' or 'replace'"}, status_code=400)
+
+    try:
+
+        body = await request.json()
+
+    except Exception:
+
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    rules = body.get("rules") if isinstance(body, dict) else body
+
+    if not isinstance(rules, list):
+
+        return JSONResponse({"error": "Expected a list of rules or {\"rules\": [...]}"}, status_code=400)
+
+    imported = 0
+
+    skipped = 0
+
+    with db_conn() as db:
+
+        if mode == "replace":
+
+            db.execute("DELETE FROM routing_rules")
+
+        existing_names: set[str] = set()
+
+        if mode == "merge":
+
+            rows = db.execute("SELECT name FROM routing_rules").fetchall()
+
+            existing_names = {r["name"] for r in rows}
+
+        for rule in rules:
+
+            name = (rule.get("name") or "").strip()
+
+            if not name:
+
+                skipped += 1
+
+                continue
+
+            if mode == "merge" and name in existing_names:
+
+                skipped += 1
+
+                continue
+
+            db.execute(
+
+                "INSERT INTO routing_rules (name, section_id, label, label_excl, channel_id, channel_name, priority, source)"
+
+                " VALUES (?,?,?,?,?,?,?,?)",
+
+                (
+
+                    name,
+
+                    str(rule.get("section_id", "*")),
+
+                    rule.get("label", ""),
+
+                    rule.get("label_excl", ""),
+
+                    rule.get("channel_id", ""),
+
+                    rule.get("channel_name", ""),
+
+                    int(rule.get("priority", 0)),
+
+                    rule.get("source", "plex"),
+
+                ),
+
+            )
+
+            imported += 1
+
+    return {"imported": imported, "skipped": skipped}
+
+
+
 @app.get("/api/process-presets")
 
 async def get_process_presets():
@@ -4360,9 +4490,15 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     </div>
 
-    <div style="margin-top:12px">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
 
       <button class="btn g sm" onclick="openAddRule()">+ Add rule</button>
+
+      <button class="btn g sm" onclick="exportRules()">Export rules</button>
+
+      <button class="btn g sm" onclick="document.getElementById('import-file').click()">Import rules</button>
+
+      <input type="file" id="import-file" accept=".json" style="display:none" onchange="importRules(this)">
 
     </div>
 
@@ -8227,6 +8363,31 @@ async function renameRulesToCanonical(rules) {
 
 
 
+
+function exportRules() {
+  window.location = '/api/routing/export';
+}
+
+async function importRules(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch(e) {
+    toast('Import failed: invalid JSON', 5000); return;
+  }
+  const r = await fetch('/api/routing/import?mode=merge', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const res = await r.json();
+  if (!r.ok) { toast('Import error: ' + (res.error || r.status), 5000); return; }
+  toast(`Imported ${res.imported} rule${res.imported!==1?'s':''}, skipped ${res.skipped}`);
+  await loadRules();
+}
 
 async function loadRules() {
 
