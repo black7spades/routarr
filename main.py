@@ -18,16 +18,10 @@ Optional env vars (pre-fill empty settings on first start):
 
   TUNARR_URL         http://192.168.1.x:8000
 
-  SSH_HOST / SSH_USER / SSH_PASS   for SFTP workaround (optional)
-
-  LINEUP_DIR         /mnt/user/appdata/tunarr/config/channel-lineups
-
-  TUNARR_CONTAINER   Tunarr
 
 """
 
-import os, json, re, time, sqlite3, asyncio, paramiko, secrets, hashlib, logging
-from cryptography.fernet import Fernet
+import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging
 
 from html import unescape
 
@@ -117,12 +111,6 @@ def init_db():
 
             );
 
-            CREATE TABLE IF NOT EXISTS sftp_channels (
-
-                channel_id TEXT PRIMARY KEY, channel_name TEXT DEFAULT ''
-
-            );
-
             CREATE TABLE IF NOT EXISTS process_presets (
 
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,16 +167,6 @@ def init_db():
 
         """)
 
-        # Migrations for older schema
-
-        try:
-
-            db.execute("ALTER TABLE sftp_channels ADD COLUMN channel_name TEXT DEFAULT ''")
-
-        except Exception:
-
-            pass
-
     seed_from_env()
 
 
@@ -207,18 +185,6 @@ def seed_from_env():
 
         "tunarr_url":       os.environ.get("TUNARR_URL", ""),
 
-        "ssh_host":         os.environ.get("SSH_HOST", ""),
-
-        "ssh_user":         os.environ.get("SSH_USER", "root"),
-
-        "ssh_pass":         os.environ.get("SSH_PASS", ""),
-
-        "lineup_dir":       os.environ.get("LINEUP_DIR",
-
-                              "/mnt/user/appdata/tunarr/config/channel-lineups"),
-
-        "tunarr_container": os.environ.get("TUNARR_CONTAINER", "Tunarr"),
-
     }
 
     with db_conn() as db:
@@ -233,9 +199,7 @@ def seed_from_env():
 
             if not row or not row["value"]:
 
-                stored = encrypt_setting(v) if k == "ssh_pass" else v
-
-                db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, stored))
+                db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
 
 
 
@@ -473,14 +437,6 @@ def migrate_db():
 
             pass  # already exists
 
-        try:
-
-            db.execute("ALTER TABLE sftp_channels ADD COLUMN program_count INTEGER DEFAULT 0")
-
-        except Exception:
-
-            pass  # already exists
-
 migrate_db()
 
 
@@ -525,45 +481,6 @@ def cfg_set(updates: dict):
 
             db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, v))
 
-
-
-# ── Encryption helpers (for sensitive settings like SSH password) ─────────────
-#
-# We use Fernet symmetric encryption (from the `cryptography` package).
-# The encryption key is randomly generated once per installation and stored in
-# the DB under the private key `_machine_key` (excluded from cfg_all() output).
-# Encrypted values are prefixed with "enc:" so old plaintext values still work.
-
-_machine_key_cache: Optional[bytes] = None
-
-
-def _get_machine_key() -> bytes:
-    global _machine_key_cache
-    if _machine_key_cache:
-        return _machine_key_cache
-    k = cfg("_machine_key")
-    if not k:
-        k = Fernet.generate_key().decode()
-        cfg_set({"_machine_key": k})
-    _machine_key_cache = k.encode()
-    return _machine_key_cache
-
-
-def encrypt_setting(plaintext: str) -> str:
-    """Encrypt a sensitive value. Returns 'enc:<ciphertext>' or '' if empty."""
-    if not plaintext:
-        return ""
-    return "enc:" + Fernet(_get_machine_key()).encrypt(plaintext.encode()).decode()
-
-
-def decrypt_setting(value: str) -> str:
-    """Decrypt a value produced by encrypt_setting. Returns plaintext as-is if not encrypted."""
-    if not value or not value.startswith("enc:"):
-        return value  # backward-compatible: unencrypted value from env or old DB
-    try:
-        return Fernet(_get_machine_key()).decrypt(value[4:].encode()).decode()
-    except Exception:
-        return ""
 
 
 # ── URL validation ────────────────────────────────────────────────────────────
@@ -619,16 +536,6 @@ def routing_rules() -> list[dict]:
             " ORDER BY priority DESC, CASE WHEN label='' THEN 1 ELSE 0 END, id"
 
         ).fetchall()]
-
-
-
-def sftp_channels() -> dict:
-
-    with db_conn() as db:
-
-        return {r["channel_id"]: r["channel_name"] for r in
-
-                db.execute("SELECT channel_id, channel_name FROM sftp_channels").fetchall()}
 
 
 
@@ -1423,70 +1330,6 @@ async def tunarr_channels(client):
 
 
 
-# ── SFTP patch (Tunarr FK bug workaround) ────────────────────────────────────
-
-
-
-def sftp_patch(channel_id, lineup):
-
-    try:
-
-        ssh = paramiko.SSHClient()
-
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        ssh.connect(cfg("ssh_host"), port=22,
-
-                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
-
-                    timeout=15, look_for_keys=False, allow_agent=False)
-
-        sftp = ssh.open_sftp()
-
-        lineup_dir = cfg("lineup_dir", "/mnt/user/appdata/tunarr/config/channel-lineups")
-
-        path = f"{lineup_dir}/{channel_id}.json"
-
-        with sftp.open(path, "r") as f:
-
-            data = json.loads(f.read().decode())
-
-        existing = {i["id"] for i in data["items"] if i.get("type") == "content"}
-
-        new_items = [i for i in lineup if i["id"] not in existing]
-
-        if not new_items:
-
-            sftp.close(); ssh.close()
-
-            return True, "already_present"
-
-        data["items"].extend(new_items)
-
-        data["lastUpdated"] = int(time.time() * 1000)
-
-        with sftp.open(path, "w") as f:
-
-            f.write(json.dumps(data, separators=(",", ":")).encode())
-
-        sftp.close()
-
-        container = cfg("tunarr_container", "Tunarr")
-
-        _, out, _ = ssh.exec_command(f"docker restart {container}", timeout=30)
-
-        out.channel.recv_exit_status()
-
-        ssh.close()
-
-        return True, f"sftp:{len(new_items)}"
-
-    except Exception as e:
-
-        return False, str(e)
-
-
-
 # ── Post-processing ───────────────────────────────────────────────────────────
 
 
@@ -1501,127 +1344,11 @@ _channel_show_groups: dict = {}   # channel_id → {show_rk: [program_id, ...]}
 
 
 
-def sftp_read_lineup(channel_id: str) -> list:
-
-    """Read lineup items from the Tunarr JSON file via SFTP."""
-
-    ssh = paramiko.SSHClient()
-
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    ssh.connect(cfg("ssh_host"), port=22,
-
-                username=cfg("ssh_user", "root"), password=cfg("ssh_pass"),
-
-                timeout=15, look_for_keys=False, allow_agent=False)
-
-    sftp = ssh.open_sftp()
-
-    path = f"{cfg('lineup_dir', '/mnt/user/appdata/tunarr/config/channel-lineups')}/{channel_id}.json"
-
-    with sftp.open(path, "r") as f:
-
-        data = json.loads(f.read().decode())
-
-    sftp.close(); ssh.close()
-
-    return data.get("items", [])
 
 
+async def fetch_channel_lineup(client, channel_id: str) -> list:
 
-def sftp_write_lineup(channel_id: str, items: list) -> tuple[bool, str]:
-
-    """Write a processed lineup back via SFTP and restart Tunarr."""
-
-    if not items:
-
-        return False, "Refused to write empty lineup"
-
-    try:
-
-        ssh = paramiko.SSHClient()
-
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        ssh.connect(cfg("ssh_host"), port=22,
-
-                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
-
-                    timeout=15, look_for_keys=False, allow_agent=False)
-
-        sftp = ssh.open_sftp()
-
-        path = f"{cfg('lineup_dir', '/mnt/user/appdata/tunarr/config/channel-lineups')}/{channel_id}.json"
-
-        with sftp.open(path, "r") as f:
-
-            data = json.loads(f.read().decode())
-
-        data["items"] = items
-
-        # Recalculate startTimeOffsets from the new item order so Tunarr can read
-
-        # the file correctly after shuffle/dedupe reorders items.
-
-        offsets = [0]
-
-        cumulative = 0
-
-        for item in items:
-
-            dur = item.get("durationMs") or item.get("duration", 0)
-
-            cumulative += dur
-
-            offsets.append(cumulative)
-
-        data["startTimeOffsets"] = offsets
-
-        data["lastUpdated"] = int(time.time() * 1000)
-
-        with sftp.open(path, "w") as f:
-
-            f.write(json.dumps(data, separators=(",", ":")).encode())
-
-        sftp.close()
-
-        _, out, _ = ssh.exec_command(f"docker restart {cfg('tunarr_container', 'Tunarr')}", timeout=30)
-
-        out.channel.recv_exit_status()
-
-        ssh.close()
-
-        with db_conn() as db:
-
-            db.execute(
-
-                "UPDATE sftp_channels SET program_count=? WHERE channel_id=?",
-
-                (len(items), channel_id))
-
-        return True, "ok"
-
-    except Exception as e:
-
-        return False, str(e)
-
-
-
-
-
-async def fetch_channel_lineup(client, channel_id: str, is_sftp: bool) -> list:
-
-    """Fetch the current raw lineup items for a channel.
-
-    SFTP channels: read from the JSON file directly.
-
-    Normal channels: GET from Tunarr API."""
-
-    if is_sftp and cfg("ssh_host"):
-
-        return await asyncio.get_event_loop().run_in_executor(
-
-            None, sftp_read_lineup, channel_id)
+    """Fetch the current raw lineup items for a channel via the Tunarr API."""
 
     # Try the Tunarr API
 
@@ -1965,49 +1692,39 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
         grps.setdefault(rk, []).extend(item["id"] for item in lineup)
 
-    bugged = sftp_channels()
+    # Deduplicate: skip programs already in this channel's lineup
 
-    if channel_id in bugged:
+    existing_ids = await _channel_existing_ids(client, channel_id)
 
-        ok, method = await asyncio.get_event_loop().run_in_executor(
+    new_lineup = [i for i in lineup if i.get("id") not in existing_ids]
 
-            None, sftp_patch, channel_id, lineup)
+    if not new_lineup:
 
-    else:
+        # Everything we'd add is already there — treat as success
 
-        # Deduplicate: skip programs already in this channel's lineup
+        mark_routed(rk, channel_id, channel_name)
 
-        existing_ids = await _channel_existing_ids(client, channel_id)
+        return {"success": True, "channel": channel_name, "method": "already_present",
 
-        new_lineup = [i for i in lineup if i.get("id") not in existing_ids]
+                "count": 0, "missed": len(missed), "debug": "All episodes already in channel"}
 
-        if not new_lineup:
+    tunarr = cfg("tunarr_url")
 
-            # Everything we'd add is already there — treat as success
+    r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
 
-            mark_routed(rk, channel_id, channel_name)
+                          json={"type": "manual", "lineup": new_lineup, "append": True}, timeout=30)
 
-            return {"success": True, "channel": channel_name, "method": "already_present",
+    ok, method = r.status_code == 200, "api"
 
-                    "count": 0, "missed": len(missed), "debug": "All episodes already in channel"}
+    if not ok:
 
-        tunarr = cfg("tunarr_url")
+        return {"success": False, "error": f"tunarr_api_{r.status_code}",
 
-        r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
+                "debug": f"Tunarr returned HTTP {r.status_code}: {r.text[:200]}",
 
-                              json={"type": "manual", "lineup": new_lineup, "append": True}, timeout=30)
+                "channel": channel_name}
 
-        ok, method = r.status_code == 200, "api"
-
-        if not ok:
-
-            return {"success": False, "error": f"tunarr_api_{r.status_code}",
-
-                    "debug": f"Tunarr returned HTTP {r.status_code}: {r.text[:200]}",
-
-                    "channel": channel_name}
-
-        lineup = new_lineup  # report count of what was actually added
+    lineup = new_lineup  # report count of what was actually added
 
     _cache.pop("channels", None)
 
@@ -3136,11 +2853,9 @@ async def get_settings():
 
     data = cfg_all()
 
-    for k in ("plex_token", "ssh_pass"):
+    if data.get("plex_token"):
 
-        if data.get(k):
-
-            data[k] = "••••••••"
+        data["plex_token"] = "••••••••"
 
     return data
 
@@ -3170,7 +2885,7 @@ async def put_settings(request: Request):
 
             )
 
-        updates[k] = encrypt_setting(v) if k == "ssh_pass" and v else v
+        updates[k] = v
 
     cfg_set(updates)
 
@@ -3564,100 +3279,6 @@ async def delete_process_preset(preset_id: int):
 
 
 
-@app.post("/api/sftp-channels/sync-counts")
-
-async def sftp_sync_counts_ep():
-
-    """Read actual program counts from SFTP JSON files and cache in DB."""
-
-    try:
-
-        chs = sftp_channels()
-
-        if not chs:
-
-            return {"synced": 0}
-
-        ssh = paramiko.SSHClient()
-
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        ssh.connect(cfg("ssh_host"), port=22,
-
-                    username=cfg("ssh_user", "root"), password=decrypt_setting(cfg("ssh_pass")),
-
-                    timeout=15, look_for_keys=False, allow_agent=False)
-
-        sftp = ssh.open_sftp()
-
-        lineup_dir = cfg("lineup_dir", "/mnt/user/appdata/tunarr/config/channel-lineups")
-
-        counts = {}
-
-        for ch_id in chs:
-
-            try:
-
-                with sftp.open(f"{lineup_dir}/{ch_id}.json", "r") as fh:
-
-                    d = json.loads(fh.read().decode())
-
-                counts[ch_id] = len(d.get("items", []))
-
-            except Exception:
-
-                counts[ch_id] = 0
-
-        sftp.close()
-
-        ssh.close()
-
-        with db_conn() as db:
-
-            for ch_id, cnt in counts.items():
-
-                db.execute(
-
-                    "UPDATE sftp_channels SET program_count=? WHERE channel_id=?",
-
-                    (cnt, ch_id))
-
-        return {"synced": len(counts), "counts": counts}
-
-    except Exception as e:
-
-        return _err(e)
-
-
-
-
-
-@app.get("/api/sftp-channels")
-
-async def get_sftp_channels():
-
-    return [{"id": k, "name": v} for k, v in sftp_channels().items()]
-
-
-
-@app.put("/api/sftp-channels")
-
-async def put_sftp_channels(request: Request):
-
-    items = await request.json()
-
-    with db_conn() as db:
-
-        db.execute("DELETE FROM sftp_channels")
-
-        for item in items:
-
-            db.execute("INSERT OR IGNORE INTO sftp_channels(channel_id,channel_name) VALUES(?,?)",
-
-                       (item["id"], item.get("name","")))
-
-    return {"ok": True}
-
 
 
 @app.get("/api/arrivals")
@@ -3785,24 +3406,6 @@ async def channels():
         async with httpx.AsyncClient() as c:
 
             result = await tunarr_channels(c)
-
-        with db_conn() as db:
-
-            rows = db.execute(
-
-                "SELECT channel_id, program_count FROM sftp_channels"
-
-            ).fetchall()
-
-        sftp_counts = {r["channel_id"]: r["program_count"] for r in rows}
-
-        if sftp_counts:
-
-            for ch in result:
-
-                if ch.get("id") in sftp_counts:
-
-                    ch["count"] = sftp_counts[ch["id"]]
 
         return result
 
@@ -4100,13 +3703,9 @@ async def process_channel(channel_id: str, request: Request):
 
         pad_mins   = int(body.get("pad_minutes", 15))
 
-        is_sftp    = channel_id in sftp_channels()
-
-
-
         async with httpx.AsyncClient() as c:
 
-            items = await fetch_channel_lineup(c, channel_id, is_sftp)
+            items = await fetch_channel_lineup(c, channel_id)
 
 
 
@@ -4150,37 +3749,25 @@ async def process_channel(channel_id: str, request: Request):
 
         # 4. Save
 
-        if is_sftp and cfg("ssh_host"):
+        tunarr = cfg("tunarr_url")
 
-            ok, msg = await asyncio.get_event_loop().run_in_executor(
+        async with httpx.AsyncClient() as c:
 
-                None, sftp_write_lineup, channel_id, items)
+            r = await c.post(
 
-            if not ok:
+                f"{tunarr}/api/channels/{channel_id}/programming",
 
-                return JSONResponse({"error": msg}, status_code=500)
+                json={"type": "manual", "lineup": items, "append": False},
 
-        else:
+                timeout=60)
 
-            tunarr = cfg("tunarr_url")
+            if r.status_code not in (200, 201, 204):
 
-            async with httpx.AsyncClient() as c:
+                return JSONResponse(
 
-                r = await c.post(
+                    {"error": f"Tunarr {r.status_code}: {r.text[:300]}"},
 
-                    f"{tunarr}/api/channels/{channel_id}/programming",
-
-                    json={"type": "manual", "lineup": items, "append": False},
-
-                    timeout=60)
-
-                if r.status_code not in (200, 201, 204):
-
-                    return JSONResponse(
-
-                        {"error": f"Tunarr {r.status_code}: {r.text[:300]}"},
-
-                        status_code=500)
+                    status_code=500)
 
 
 
@@ -4405,8 +3992,6 @@ tr:last-child td{border-bottom:none}tr:hover td{background:rgba(255,255,255,.02)
 .setup-banner{background:#110e00;border:1px solid var(--yellow);border-radius:8px;padding:14px 18px;margin-bottom:16px;font-size:13px;display:flex;align-items:center;gap:12px}
 
 .setup-banner strong{color:var(--yellow)}
-
-/* SFTP */
 
 /* Genre editing */
 
@@ -7737,14 +7322,6 @@ async function loadChannels(force=false) {
 
   try {
 
-    if (!window._sftpCountsSynced) {
-
-      window._sftpCountsSynced = true;
-
-      try { await fetch('/api/sftp-channels/sync-counts', {method:'POST'}); } catch(_){}
-
-    }
-
     const res = await fetch('/api/channels');
 
     clearTimeout(hintTimer);
@@ -8057,7 +7634,7 @@ async function runProcess() {
 
       (s.final_content??'?')+' programs', true);
 
-    setTimeout(loadChannels, 8000);  // allow time for Tunarr to restart after SFTP writes
+    setTimeout(loadChannels, 2000);
 
   } catch(e) {
 
@@ -8085,7 +7662,7 @@ async function processAll() {
 
     (s.pad_minutes > 0 ? ', ' + s.pad_minutes + 'm pad' : '') || 'no-op';
 
-  if (!confirm('Apply last-used process settings to all ' + allChannels.length + ' channels?\n\nSettings: ' + label + '\n\nSFTP channels will restart Tunarr after each one.')) return;
+  if (!confirm('Apply last-used process settings to all ' + allChannels.length + ' channels?\n\nSettings: ' + label)) return;
 
 
 
