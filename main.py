@@ -2740,6 +2740,10 @@ async def get_login():
 
                         if ident and "ChatGPT" not in ident:
 
+                            if not ident.startswith("http"):
+
+                                ident = tunarr.rstrip("/") + ident
+
                             idents.append(ident)
 
     except Exception:
