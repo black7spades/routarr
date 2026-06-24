@@ -21,7 +21,7 @@ Optional env vars (pre-fill empty settings on first start):
 
 """
 
-import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging
+import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging, urllib.parse
 
 from html import unescape
 
@@ -387,7 +387,7 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         + e +
 
-        '<form id="lf" onsubmit="_li(event)">'
+        '<form id="lf" method="post" action="/login" onsubmit="_li(event)">'
 
         '<label>Username</label>'
 
@@ -2664,6 +2664,10 @@ async def get_channel_idents():
 
                         if ident and "ChatGPT" not in ident:
 
+                            if not ident.startswith("http"):
+
+                                ident = tunarr.rstrip("/") + ident
+
                             out.append({"id": ch.get("id"), "name": ch.get("name"), "ident": ident})
 
     except Exception:
@@ -2744,7 +2748,7 @@ async def get_login():
 
                                 ident = tunarr.rstrip("/") + ident
 
-                            idents.append(ident)
+                            idents.append("/api/proxy-image?url=" + urllib.parse.quote(ident, safe=""))
 
     except Exception:
 
@@ -2769,11 +2773,28 @@ async def post_login(request: Request):
 
     try:
 
-        body = await request.json()
+        ct = request.headers.get("content-type", "")
 
-        username = str(body.get('username', ''))
+        if "application/json" in ct:
 
-        password = str(body.get('password', ''))
+            body = await request.json()
+
+            username = str(body.get('username', ''))
+
+            password = str(body.get('password', ''))
+
+            is_json = True
+
+        else:
+
+            # Native form POST (e.g. password manager submitting without JS)
+            form = await request.form()
+
+            username = str(form.get('username', ''))
+
+            password = str(form.get('password', ''))
+
+            is_json = False
 
     except Exception:
 
@@ -2783,7 +2804,13 @@ async def post_login(request: Request):
 
     if not u:
 
-        return JSONResponse({'ok': True, 'redirect': '/'})
+        if is_json:
+
+            return JSONResponse({'ok': True, 'redirect': '/'})
+
+        resp = RedirectResponse('/', status_code=303)
+
+        return resp
 
     if username == u and _verify_pw(password, ph):
 
@@ -2806,7 +2833,13 @@ async def post_login(request: Request):
         # Clear failure history on successful login
         _login_failures.pop(ip, None)
 
-        resp = JSONResponse({'ok': True, 'redirect': '/'})
+        if is_json:
+
+            resp = JSONResponse({'ok': True, 'redirect': '/'})
+
+        else:
+
+            resp = RedirectResponse('/', status_code=303)
 
         resp.set_cookie('pilotarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
 
@@ -2816,7 +2849,11 @@ async def post_login(request: Request):
     attempts.append(now)
     _login_failures[ip] = attempts
 
-    return JSONResponse({'error': 'Invalid username or password'}, status_code=401)
+    if is_json:
+
+        return JSONResponse({'error': 'Invalid username or password'}, status_code=401)
+
+    return _login_page(error='Invalid username or password')
 
 
 
@@ -7560,9 +7597,11 @@ function renderChannels() {
 
         const bgUrl = ch.ident || ch.icon;
 
-        const bg = bgUrl
+        const proxied = bgUrl ? '/api/proxy-image?url='+encodeURIComponent(bgUrl) : '';
 
-          ? '<div class="chcard-bg" style="background-image:url('+escHtml(bgUrl)+')"></div>'
+        const bg = proxied
+
+          ? '<div class="chcard-bg" style="background-image:url('+proxied+')"></div>'
 
           : '';
 
