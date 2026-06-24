@@ -9,7 +9,7 @@
 
 services:
   routarr:
-    image: black7spades/routarr:latest
+    image: ghcr.io/black7spades/routarr:latest
     # To build from source instead:
     # build: .
     container_name: routarr
