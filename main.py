@@ -45,6 +45,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("routarr")
 
 
+def _tunarr_img(pic: str, base: str) -> str:
+    """Rewrite any host in a Tunarr image path to use our configured base URL.
+
+    Tunarr sometimes embeds its own public hostname in image URLs (e.g.
+    http://tunarr.kandyland.one/images/...) even when Routarr has it stored
+    as an internal IP.  By stripping the foreign host and prepending our
+    configured base we guarantee the proxy allowlist check passes."""
+    if not pic:
+        return ""
+    base = base.rstrip("/")
+    if pic.startswith("http"):
+        p = urllib.parse.urlparse(pic)
+        path = p.path + (("?" + p.query) if p.query else "")
+        return base + path
+    return base + (pic if pic.startswith("/") else "/" + pic)
+
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 
@@ -1331,7 +1348,7 @@ async def tunarr_channels(client):
 
             return None
 
-        return path if path.startswith("http") else f"{tunarr_base}{path}"
+        return _tunarr_img(path, tunarr_base)
 
     def _ident(c):
 
@@ -1341,7 +1358,7 @@ async def tunarr_channels(client):
 
             return None
 
-        return pic if pic.startswith("http") else f"{tunarr_base}{pic}"
+        return _tunarr_img(pic, tunarr_base)
 
     result = sorted(
 
@@ -2666,11 +2683,7 @@ async def get_channel_idents():
 
                         if ident and "ChatGPT" not in ident:
 
-                            if not ident.startswith("http"):
-
-                                ident = tunarr.rstrip("/") + ident
-
-                            out.append({"id": ch.get("id"), "name": ch.get("name"), "ident": ident})
+                            out.append({"id": ch.get("id"), "name": ch.get("name"), "ident": _tunarr_img(ident, tunarr)})
 
     except Exception:
 
@@ -2751,9 +2764,7 @@ async def get_login():
 
                         if ident and "ChatGPT" not in ident:
 
-                            if not ident.startswith("http"):
-
-                                ident = tunarr.rstrip("/") + ident
+                            ident = _tunarr_img(ident, tunarr)
 
                             idents.append("/api/proxy-image?url=" + urllib.parse.quote(ident, safe=""))
 
