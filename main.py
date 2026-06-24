@@ -407,8 +407,10 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         'const _ids=' + idents_js + ';'
 
+        'console.log("[Routarr] login idents:",_ids.length,_ids);'
+
         '(function(){'
-        'if(!_ids.length)return;'
+        'if(!_ids.length){console.warn("[Routarr] no idents — background will be black");return;}'
         'const _L=[document.getElementById("bg0"),document.getElementById("bg1")];'
         'let _a=0,_i=Math.floor(Math.random()*_ids.length);'
         'function _show(li,url){'
@@ -2742,6 +2744,11 @@ async def get_login():
 
                         ident = (ch.get("offline") or {}).get("picture", "")
 
+                        if not ident:
+                            # Fallback to channel icon when no offline screensaver is set
+                            icon = ch.get("icon", {})
+                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
+
                         if ident and "ChatGPT" not in ident:
 
                             if not ident.startswith("http"):
@@ -2750,9 +2757,9 @@ async def get_login():
 
                             idents.append("/api/proxy-image?url=" + urllib.parse.quote(ident, safe=""))
 
-    except Exception:
+    except Exception as _ex:
 
-        pass
+        logger.warning("get_login ident fetch failed: %s", _ex)
 
     return _login_page(idents=idents)
 
@@ -2787,12 +2794,18 @@ async def post_login(request: Request):
 
         else:
 
-            # Native form POST (e.g. password manager submitting without JS)
-            form = await request.form()
+            # Native form POST (e.g. password manager submitting without JS).
+            # Parse manually so we never depend on python-multipart being present.
+            raw = await request.body()
+            pairs = {}
+            for part in raw.decode("utf-8", errors="replace").split("&"):
+                if "=" in part:
+                    k, _, v = part.partition("=")
+                    pairs[urllib.parse.unquote_plus(k)] = urllib.parse.unquote_plus(v)
 
-            username = str(form.get('username', ''))
+            username = str(pairs.get('username', ''))
 
-            password = str(form.get('password', ''))
+            password = str(pairs.get('password', ''))
 
             is_json = False
 
