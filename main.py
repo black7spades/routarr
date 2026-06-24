@@ -1331,13 +1331,23 @@ async def tunarr_channels(client):
 
         return path if path.startswith("http") else f"{tunarr_base}{path}"
 
+    def _ident(c):
+
+        pic = (c.get("offline") or {}).get("picture", "")
+
+        if not pic or "ChatGPT" in pic:
+
+            return None
+
+        return pic if pic.startswith("http") else f"{tunarr_base}{pic}"
+
     result = sorted(
 
         [{"id": c["id"], "name": c.get("name", c["id"]),
 
           "number": c.get("number", 0), "count": c.get("programCount", 0),
 
-          "icon": _icon(c)}
+          "icon": _icon(c), "ident": _ident(c)}
 
          for c in r.json()],
 
@@ -2311,9 +2321,47 @@ async def _health_loop():
 
 
 
+async def _cache_plex_machine_id():
+
+    """Fetch and store Plex machineIdentifier so Plex links work without visiting Settings."""
+
+    if cfg("plex_machine_id"):
+
+        return  # already cached
+
+    plex_url   = cfg("plex_url")
+
+    plex_token = cfg("plex_token")
+
+    if not plex_url or not plex_token:
+
+        return
+
+    try:
+
+        async with httpx.AsyncClient(timeout=5) as c:
+
+            r = await c.get(f"{plex_url}/identity", headers={"X-Plex-Token": plex_token})
+
+            if r.status_code == 200:
+
+                m = re.search(r'machineIdentifier="([^"]+)"', r.text)
+
+                if m:
+
+                    cfg_set({"plex_machine_id": m.group(1)})
+
+    except Exception:
+
+        pass
+
+
+
 @asynccontextmanager
 
 async def _lifespan(app):
+
+    asyncio.create_task(_cache_plex_machine_id())
 
     task  = asyncio.create_task(_scan_loop())
 
@@ -2528,7 +2576,9 @@ async def get_versions():
 
                     mid = re.search(r'machineIdentifier="([^"]+)"', r.text)
 
-                    if mid: cfg_set({"plex_machine_id": mid.group(1)})
+                    if mid and mid.group(1) != cfg("plex_machine_id"):
+
+                        cfg_set({"plex_machine_id": mid.group(1)})
 
             except Exception:
 
@@ -2689,6 +2739,10 @@ async def get_login():
                         ident = (ch.get("offline") or {}).get("picture", "")
 
                         if ident and "ChatGPT" not in ident:
+
+                            if not ident.startswith("http"):
+
+                                ident = tunarr.rstrip("/") + ident
 
                             idents.append(ident)
 
@@ -4056,9 +4110,9 @@ tr:last-child td{border-bottom:none}tr:hover td{background:rgba(255,255,255,.02)
 
 .chcard:hover{border-color:var(--s3)}
 
-.chcard-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:.28;border-radius:8px;pointer-events:none;transition:opacity .3s}
+.chcard-bg{position:absolute;inset:0;background-size:cover;background-position:center;opacity:var(--ident-op,.28);border-radius:8px;pointer-events:none;transition:opacity .3s}
 
-.chcard:hover .chcard-bg{opacity:.45}
+.chcard:hover .chcard-bg{opacity:calc(var(--ident-op,.28) * 1.5)}
 
 .chcard-content{position:relative;z-index:1;display:flex;flex-direction:column;height:100%}
 
@@ -4874,6 +4928,20 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
           oninput="applyBarHeight(this.value)">
 
         <div class="hint" style="display:flex;justify-content:space-between"><span>Thin</span><span>Thick</span></div>
+
+      </div>
+
+      <div class="field">
+
+        <label>Channel ident opacity — <span id="ident-label">28%</span></label>
+
+        <input type="range" id="ident-slider" min="5" max="80" step="1" value="28"
+
+          style="width:100%;accent-color:var(--acc);cursor:pointer;margin-top:6px"
+
+          oninput="applyIdentOpacity(this.value)">
+
+        <div class="hint" style="display:flex;justify-content:space-between"><span>Subtle</span><span>Vivid</span></div>
 
       </div>
 
@@ -5924,6 +5992,26 @@ function applyBarHeight(px) {
 
 
 
+function applyIdentOpacity(pct) {
+
+  const v = parseFloat(pct) / 100;
+
+  document.documentElement.style.setProperty('--ident-op', v);
+
+  const lbl = document.getElementById('ident-label');
+
+  if (lbl) lbl.textContent = pct+'%';
+
+  const sl = document.getElementById('ident-slider');
+
+  if (sl) sl.value = pct;
+
+  localStorage.setItem('routarr-ident-op', pct);
+
+}
+
+
+
 function setTheme(mode) {
 
   if (mode === 'light') document.body.classList.add('light');
@@ -5961,6 +6049,10 @@ function toggleTheme() {
   const bh = localStorage.getItem('routarr-bh');
 
   if (bh) applyBarHeight(bh);
+
+  const identOp = localStorage.getItem('routarr-ident-op');
+
+  if (identOp) applyIdentOpacity(identOp);
 
   const pal = localStorage.getItem('routarr-palette');
 
@@ -7466,9 +7558,11 @@ function renderChannels() {
 
     + sorted.map(ch => {
 
-        const bg = ch.icon
+        const bgUrl = ch.ident || ch.icon;
 
-          ? '<div class="chcard-bg" style="background-image:url('+escHtml(ch.icon)+')"></div>'
+        const bg = bgUrl
+
+          ? '<div class="chcard-bg" style="background-image:url('+escHtml(bgUrl)+')"></div>'
 
           : '';
 
