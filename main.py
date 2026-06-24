@@ -26,7 +26,7 @@ Optional env vars (pre-fill empty settings on first start):
 
 """
 
-import os, json, re, time, sqlite3, asyncio, paramiko, secrets, hashlib
+import os, json, re, time, sqlite3, asyncio, paramiko, secrets, hashlib, logging
 
 from html import unescape
 
@@ -44,6 +44,10 @@ from typing import Optional
 
 import httpx
 
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("routarr")
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -162,6 +166,16 @@ def init_db():
 
             );
 
+            CREATE TABLE IF NOT EXISTS sessions (
+
+                token TEXT PRIMARY KEY,
+
+                username TEXT NOT NULL,
+
+                expires_at INTEGER NOT NULL
+
+            );
+
         """)
 
         # Migrations for older schema
@@ -255,7 +269,27 @@ backup_db()
 
 
 
-_sessions: dict = {}  # token -> username
+_sessions: dict = {}  # token -> username  (populated from DB on startup)
+
+_SESSION_TTL = 86400 * 30  # 30 days
+
+# Brute-force protection: track failed login timestamps per IP
+_login_failures: dict = {}  # ip -> [timestamp, ...]
+_LOGIN_WINDOW = 300         # 5-minute sliding window
+_LOGIN_MAX_FAILS = 10       # block after this many failures in the window
+
+
+def _load_sessions():
+    """Restore valid sessions from DB so restarts don't log users out."""
+    now = int(time.time())
+    with db_conn() as db:
+        db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        rows = db.execute("SELECT token, username FROM sessions WHERE expires_at > ?", (now,)).fetchall()
+    for r in rows:
+        _sessions[r["token"]] = r["username"]
+
+
+_load_sessions()
 
 
 
@@ -611,9 +645,22 @@ def cache_get(key, ttl=1800):
 
 
 
+_CACHE_MAX = 500  # prune when we exceed this many entries
+
+
 def cache_set(key, value):
 
     _cache[key] = {"t": time.time(), "v": value}
+
+    if len(_cache) > _CACHE_MAX:
+
+        cutoff = time.time() - 1800
+
+        stale = [k for k, v in list(_cache.items()) if v["t"] < cutoff]
+
+        for k in stale:
+
+            _cache.pop(k, None)
 
 
 
@@ -2765,6 +2812,15 @@ async def get_login():
 
 async def post_login(request: Request):
 
+    ip = request.client.host if request.client else "unknown"
+
+    # Rate-limit: count failures in the sliding window
+    now = time.time()
+    attempts = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
+    if len(attempts) >= _LOGIN_MAX_FAILS:
+        logger.warning(f"Login rate limit hit for {ip}")
+        return JSONResponse({'error': 'Too many failed attempts — try again later'}, status_code=429)
+
     try:
 
         body = await request.json()
@@ -2787,13 +2843,32 @@ async def post_login(request: Request):
 
         token = secrets.token_hex(32)
 
+        expires_at = int(now) + _SESSION_TTL
+
         _sessions[token] = username
+
+        with db_conn() as db:
+
+            db.execute(
+
+                "INSERT OR REPLACE INTO sessions(token, username, expires_at) VALUES(?,?,?)",
+
+                (token, username, expires_at),
+
+            )
+
+        # Clear failure history on successful login
+        _login_failures.pop(ip, None)
 
         resp = JSONResponse({'ok': True, 'redirect': '/'})
 
-        resp.set_cookie('pilotarr_session', token, httponly=True, samesite='lax', max_age=86400 * 30)
+        resp.set_cookie('pilotarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
 
         return resp
+
+    # Record failure
+    attempts.append(now)
+    _login_failures[ip] = attempts
 
     return JSONResponse({'error': 'Invalid username or password'}, status_code=401)
 
@@ -2808,6 +2883,10 @@ async def logout(request: Request):
     if token:
 
         _sessions.pop(token, None)
+
+        with db_conn() as db:
+
+            db.execute("DELETE FROM sessions WHERE token=?", (token,))
 
     resp = RedirectResponse('/login' if _auth_on() else '/', status_code=302)
 
@@ -2834,6 +2913,8 @@ async def put_auth(request: Request):
         with db_conn() as db:
 
             db.execute("DELETE FROM settings WHERE key IN ('auth_username','auth_password_hash')")
+
+            db.execute("DELETE FROM sessions")
 
         _sessions.clear()
 
