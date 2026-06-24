@@ -3,7 +3,8 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.title="Routarr" \
       org.opencontainers.image.description="Plex/Jellyfin → Tunarr routing companion" \
       org.opencontainers.image.url="https://github.com/black7spades/routarr" \
-      org.opencontainers.image.source="https://github.com/black7spades/routarr"
+      org.opencontainers.image.source="https://github.com/black7spades/routarr" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
