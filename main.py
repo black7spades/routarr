@@ -2219,21 +2219,55 @@ async def _run_scan_once():
 
         _scan_state["last_scan"] = time.time()
 
-        # Auto-route new arrivals if enabled
+        # Auto-route new arrivals (global or per-channel setting)
 
-        if cfg("auto_route") == "1":
+        _ar_global = cfg("auto_route") == "1"
+
+        _ar_ch = set(x for x in (cfg("auto_route_channels") or "").split(",") if x.strip())
+
+        if _ar_global or _ar_ch:
 
             try:
 
                 async with httpx.AsyncClient() as _c:
 
-                    _items = await plex_new_content(_c, days)
+                    _all: list = []
 
-                    _pending = [i for i in _items if i.get("targetChannel") and not i.get("alreadyRouted")]
+                    try:
+
+                        _all += await plex_new_content(_c, days)
+
+                    except Exception:
+
+                        pass
+
+                    try:
+
+                        _all += await jellyfin_new_content(_c, days)
+
+                    except Exception:
+
+                        pass
+
+                    _pending = [
+
+                        i for i in _all
+
+                        if i.get("targetChannel") and not i.get("alreadyRouted")
+
+                        and (_ar_global or i["targetChannel"] in _ar_ch)
+
+                    ]
 
                     for _item in _pending:
 
-                        _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item["labels"])
+                        if _item.get("source") == "jellyfin":
+
+                            _r = await route_jellyfin_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
+
+                        else:
+
+                            _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
 
                         if _r.get("success"):
 
@@ -2241,7 +2275,9 @@ async def _run_scan_once():
 
                     if _pending:
 
-                        _cache.pop(f"plex_new_{days}", None)
+                        for _k in [f"plex_new_{days}", f"jf_new_{days}"]:
+
+                            _cache.pop(_k, None)
 
             except Exception as _exc:
 
@@ -4291,6 +4327,134 @@ async def get_dirty_channels():
 
 
 
+@app.get("/api/channels/auto-route")
+
+async def get_channel_auto_route():
+
+    raw = cfg("auto_route_channels") or ""
+
+    enabled = [x for x in raw.split(",") if x.strip()]
+
+    return {"enabled": enabled}
+
+
+
+@app.put("/api/channels/auto-route")
+
+async def set_channel_auto_route(body: dict):
+
+    raw = cfg("auto_route_channels") or ""
+
+    enabled = set(x for x in raw.split(",") if x.strip())
+
+    if body.get("enable_all"):
+
+        try:
+
+            async with httpx.AsyncClient() as c:
+
+                channels = await tunarr_channels(c)
+
+            enabled = {ch["id"] for ch in channels}
+
+        except Exception:
+
+            pass
+
+    else:
+
+        ch_id = body.get("channel_id", "")
+
+        if ch_id:
+
+            if body.get("enabled"):
+
+                enabled.add(ch_id)
+
+            else:
+
+                enabled.discard(ch_id)
+
+    cfg_set({"auto_route_channels": ",".join(enabled)})
+
+    return {"enabled": list(enabled)}
+
+
+
+@app.post("/api/route/now")
+
+async def route_now(request: Request, days: int = 14):
+
+    """Immediately route all pending items for all sources."""
+
+    ip = request.client.host if request.client else "unknown"
+
+    if not _rate_ok(ip, "route_now", 5, 60):
+
+        return JSONResponse({"error": "Too many route requests"}, status_code=429)
+
+    try:
+
+        async with httpx.AsyncClient() as c:
+
+            all_items: list = []
+
+            try:
+
+                plex_items = await plex_new_content(c, days)
+
+                all_items += plex_items
+
+            except Exception:
+
+                pass
+
+            try:
+
+                jf_items = await jellyfin_new_content(c, days)
+
+                all_items += jf_items
+
+            except Exception:
+
+                pass
+
+            pending = [i for i in all_items if i.get("targetChannel") and not i.get("alreadyRouted")]
+
+            results, ch_seen = [], set()
+
+            for item in pending:
+
+                if item.get("source") == "jellyfin":
+
+                    r = await route_jellyfin_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+
+                else:
+
+                    r = await route_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+
+                results.append({"title": item["title"], **r})
+
+                if r.get("success"):
+
+                    ch_seen.add(r.get("channel", ""))
+
+            for k in list(_cache.keys()):
+
+                if k.startswith(("plex_new_", "jf_new_", "ch_existing_")):
+
+                    del _cache[k]
+
+            routed_count = len([r for r in results if r.get("success")])
+
+            return {"routed": routed_count, "total": len(results), "channels": len(ch_seen)}
+
+    except Exception as e:
+
+        return _err(e)
+
+
+
 @app.get("/api/cache/clear")
 
 async def clear_cache_ep():
@@ -4941,6 +5105,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="btn g sm" onclick="loadChannels(true)">Refresh</button>
 
     <button class="btn g sm" id="proc-all-btn" onclick="processAll()" title="Apply last-used process settings to every channel">Process All</button>
+
+    <button class="btn p sm" onclick="routeAllNow()" title="Route all pending items to their matched channels right now">⚡ Route All Now</button>
+
+    <button class="btn g sm" onclick="enableAllAutoRoute()" title="Enable auto-route for every channel">Enable All Auto</button>
 
   </div>
 
@@ -5780,6 +5948,8 @@ let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSecti
 let _dirtyChannels = new Set();
 
 let _autoRoute = false;
+
+let _autoRouteChannels = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
@@ -8016,6 +8186,7 @@ function renderChannels() {
           : '';
 
         const needsProc = _dirtyChannels.has(ch.id);
+        const autoOn = _autoRouteChannels.has(ch.id);
         const dirtyBadge = needsProc ? '<span style="position:absolute;top:6px;right:6px;background:var(--acc);color:var(--bg);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;pointer-events:none">⚡ Needs processing</span>' : '';
         return '<div class="chcard" style="position:relative">'
 
@@ -8042,6 +8213,10 @@ function renderChannels() {
           +'</div>'
 
           +'<div class="chcard-actions">'
+
+          +'<button class="btn '+(autoOn?'p':'g')+' sm" onclick="toggleChannelAutoRoute(\''+ch.id+'\','+(!autoOn)+')">'
+          +(autoOn ? '⚡ Auto On' : 'Auto Off')
+          +'</button>'
 
           +'<button class="btn '+(needsProc?'p':'g')+' sm" onclick="openProcModal(\''+ch.id+'\')">&#9881; Process</button>'
 
@@ -8077,11 +8252,13 @@ async function loadChannels(force=false) {
 
   try {
 
-    const [res, dirtyRes] = await Promise.all([
+    const [res, dirtyRes, arRes] = await Promise.all([
 
       fetch('/api/channels'),
 
       fetch('/api/channels/dirty').catch(() => null),
+
+      fetch('/api/channels/auto-route').catch(() => null),
 
     ]);
 
@@ -8094,6 +8271,8 @@ async function loadChannels(force=false) {
     allChannels = data;
 
     if (dirtyRes) { const d = await dirtyRes.json().catch(()=>({})); _dirtyChannels = new Set(Object.keys(d)); }
+
+    if (arRes) { const ar = await arRes.json().catch(()=>({})); _autoRouteChannels = new Set(ar.enabled || []); }
 
     renderChannels();
 
@@ -8981,6 +9160,57 @@ async function importRules(input) {
   if (!r.ok) { toast('Import error: ' + (res.error || r.status), 5000); return; }
   toast(`Imported ${res.imported} rule${res.imported!==1?'s':''}, skipped ${res.skipped}`);
   await loadRules();
+}
+
+async function loadChannelAutoRoute() {
+  try {
+    const d = await (await fetch('/api/channels/auto-route')).json();
+    _autoRouteChannels = new Set(d.enabled || []);
+  } catch {}
+}
+
+async function toggleChannelAutoRoute(channelId, enabled) {
+  if (enabled) _autoRouteChannels.add(channelId);
+  else _autoRouteChannels.delete(channelId);
+  renderChannels();
+  try {
+    await fetch('/api/channels/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({channel_id: channelId, enabled})
+    });
+  } catch {}
+}
+
+async function enableAllAutoRoute() {
+  _autoRouteChannels = new Set(allChannels.map(c => c.id));
+  renderChannels();
+  try {
+    await fetch('/api/channels/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enable_all: true})
+    });
+    logAction('Auto-route enabled for all channels', true, {action_type:'rule'});
+  } catch {}
+}
+
+async function routeAllNow() {
+  const btn = document.querySelector('[onclick="routeAllNow()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Routing…'; }
+  try {
+    const r = await (await fetch('/api/route/now', {method:'POST'})).json();
+    const msg = r.routed > 0
+      ? `Routed ${r.routed} item${r.routed===1?'':'s'} to ${r.channels} channel${r.channels===1?'':'s'}`
+      : 'Nothing pending to route';
+    logAction(msg, true, {action_type:'route'});
+    toast(msg);
+    if (r.routed > 0) loadChannels();
+  } catch(e) {
+    toast('Route failed');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '⚡ Route All Now'; }
+  }
 }
 
 async function loadAutoRouteSetting() {
