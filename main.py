@@ -4217,7 +4217,7 @@ async def _get_filler_lists(client) -> list:
 
 async def debug_tunarr_filler_probe():
 
-    """Try every plausible write method for a filler list and report results."""
+    """Probe Tunarr filler list API to find the correct write format."""
 
     tunarr = cfg("tunarr_url")
 
@@ -4231,63 +4231,46 @@ async def debug_tunarr_filler_probe():
 
         async with httpx.AsyncClient(timeout=10) as c:
 
-            # 1. GET /api/filler-lists to find a real filler list ID
-
+            # GET the first filler list
             r0 = await c.get(f"{tunarr}/api/filler-lists")
-
-            results["GET /api/filler-lists"] = r0.status_code
 
             lists = r0.json() if r0.status_code == 200 else []
 
-            fid = lists[0]["id"] if lists else "NONE"
+            if not lists:
 
-            results["first_filler_id"] = fid
+                return {"error": "no filler lists found"}
 
-            if fid == "NONE":
+            fid = lists[0]["id"]
 
-                return results
+            results["filler_list_object"] = lists[0]
 
-            dummy = []
+            # GET the individual filler list to see full shape
+            r1 = await c.get(f"{tunarr}/api/filler-lists/{fid}")
 
-            # 2. Probe GET /content
+            results["GET /api/filler-lists/{id}"] = r1.status_code
 
-            r = await c.get(f"{tunarr}/api/filler-lists/{fid}/content",
+            if r1.status_code == 200:
 
-                            params={"offset": 0, "limit": 1})
+                results["filler_detail"] = r1.json()
 
-            results["GET /content"] = r.status_code
+            # Try PUT with just the object we got back (no-op round-trip)
+            if r1.status_code == 200:
 
-            if r.status_code == 200:
+                r2 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json=r1.json())
 
-                results["GET /content body keys"] = list((r.json() if isinstance(r.json(), dict) else {}).keys())
+                results["PUT with existing object"] = {"status": r2.status_code, "body": r2.text[:300]}
 
-            # 3. Probe write candidates (send empty body, expect non-404)
+            # Try PUT with name only
+            name = lists[0].get("name", "test")
 
-            candidates = [
+            r3 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json={"name": name})
 
-                ("POST",  f"/api/filler-lists/{fid}/programming"),
+            results["PUT with name only"] = {"status": r3.status_code, "body": r3.text[:300]}
 
-                ("POST",  f"/api/filler-lists/{fid}/programs"),
+            # Try PUT with name + empty programs array
+            r4 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json={"name": name, "programs": []})
 
-                ("PUT",   f"/api/filler-lists/{fid}/programs"),
-
-                ("PATCH", f"/api/filler-lists/{fid}/content"),
-
-                ("POST",  f"/api/filler-lists/{fid}/content"),
-
-                ("PUT",   f"/api/filler-lists/{fid}/content"),
-
-                ("PUT",   f"/api/filler-lists/{fid}"),
-
-            ]
-
-            for method, path in candidates:
-
-                req = getattr(c, method.lower())
-
-                r = await req(f"{tunarr}{path}", json=dummy)
-
-                results[f"{method} {path}"] = r.status_code
+            results["PUT with name+programs"] = {"status": r4.status_code, "body": r4.text[:300]}
 
     except Exception as e:
 
