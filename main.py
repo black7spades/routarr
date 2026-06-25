@@ -554,7 +554,7 @@ def cfg_set(updates: dict):
 
 # ── URL validation ────────────────────────────────────────────────────────────
 
-_URL_SETTINGS = {"plex_url", "tunarr_url", "jellyfin_url"}
+_URL_SETTINGS = {"plex_url", "tunarr_url", "jellyfin_url", "plex_public_url", "jellyfin_public_url"}
 
 
 def _valid_url(v: str) -> bool:
@@ -2539,11 +2539,47 @@ async def _cache_plex_machine_id():
 
 
 
+async def _cache_jellyfin_server_id():
+
+    """Fetch and store Jellyfin server Id so JF links work without visiting Settings."""
+
+    if cfg("jellyfin_server_id"):
+
+        return
+
+    jf_url = cfg("jellyfin_url")
+
+    if not jf_url:
+
+        return
+
+    try:
+
+        async with httpx.AsyncClient(timeout=5) as c:
+
+            r = await c.get(f"{jf_url}/System/Info/Public")
+
+            if r.status_code == 200:
+
+                sid = r.json().get("Id")
+
+                if sid:
+
+                    cfg_set({"jellyfin_server_id": sid})
+
+    except Exception:
+
+        pass
+
+
+
 @asynccontextmanager
 
 async def _lifespan(app):
 
     asyncio.create_task(_cache_plex_machine_id())
+
+    asyncio.create_task(_cache_jellyfin_server_id())
 
     task  = asyncio.create_task(_scan_loop())
 
@@ -2984,7 +3020,13 @@ async def get_versions():
 
                 if r.status_code == 200:
 
-                    out["jellyfin"] = r.json().get("Version")
+                    jd = r.json()
+
+                    out["jellyfin"] = jd.get("Version")
+
+                    if jd.get("Id") and not cfg("jellyfin_server_id"):
+
+                        cfg_set({"jellyfin_server_id": jd["Id"]})
 
             except Exception:
 
@@ -5640,6 +5682,16 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       </div>
 
+      <div class="field">
+
+        <label>Jellyfin public URL <span style="color:var(--muted);font-weight:400">(optional &mdash; for media links)</span></label>
+
+        <input id="s-jellyfin_public_url" placeholder="https://jellyfin.yourdomain.com">
+
+        <div class="hint">If set, item titles in the Media tab will link to this address. Leave blank to use the Jellyfin address above.</div>
+
+      </div>
+
     </div>
 
     <div class="fg" style="margin-bottom:18px">
@@ -5673,6 +5725,16 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
           4. Copy the long string that appears — that's your token
 
         </div>
+
+      </div>
+
+      <div class="field">
+
+        <label>Plex public URL <span style="color:var(--muted);font-weight:400">(optional &mdash; for media links)</span></label>
+
+        <input id="s-plex_public_url" placeholder="https://plex.yourdomain.com">
+
+        <div class="hint">If set, item titles in the Media tab will link to this address. Leave blank to use the Plex address above.</div>
 
       </div>
 
@@ -6049,7 +6111,8 @@ let _autoRouteRules = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
-let _plexUrl = '', _plexMachineId = '';
+let _plexUrl = '', _plexMachineId = '', _plexPublicUrl = '';
+let _jfUrl = '', _jfPublicUrl = '', _jfServerId = '';
 
 let arrSort = {col: 'added', dir: 'desc'};
 
@@ -7117,11 +7180,15 @@ async function loadArrivals(force=false) {
 
   if (force) await fetch('/api/cache/clear');
 
-  if (!_plexMachineId) {
+  if (!_plexMachineId || !_jfServerId) {
     try {
       const s = await (await fetch('/api/settings')).json();
-      _plexUrl = s.plex_url || '';
-      _plexMachineId = s.plex_machine_id || '';
+      _plexUrl        = s.plex_url || '';
+      _plexMachineId  = s.plex_machine_id || '';
+      _plexPublicUrl  = s.plex_public_url || '';
+      _jfUrl          = s.jellyfin_url || '';
+      _jfPublicUrl    = s.jellyfin_public_url || '';
+      _jfServerId     = s.jellyfin_server_id || '';
     } catch(e) {}
   }
 
@@ -7465,8 +7532,10 @@ function renderArrivals() {
 
       +'<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
 
-      +(item.source==='plex' && _plexUrl && _plexMachineId
-        ? '<a href="'+escHtml(_plexUrl)+'/web/#!/server/'+escHtml(_plexMachineId)+'/details?key=%2Flibrary%2Fmetadata%2F'+encodeURIComponent(rk)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px solid var(--bdr)" title="Open in Plex">'+escHtml(item.title)+'</a>'
+      +(item.source==='plex' && _plexMachineId
+        ? '<a href="'+escHtml(_plexPublicUrl||_plexUrl)+'/web/#!/server/'+escHtml(_plexMachineId)+'/details?key=%2Flibrary%2Fmetadata%2F'+encodeURIComponent(rk)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px solid var(--bdr)" title="Open in Plex">'+escHtml(item.title)+'</a>'
+        : item.source==='jellyfin' && (_jfPublicUrl||_jfUrl) && _jfServerId
+        ? '<a href="'+escHtml(_jfPublicUrl||_jfUrl)+'/web/index.html#!/details?id='+encodeURIComponent(rk.replace('jf:',''))+'&serverId='+encodeURIComponent(_jfServerId)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;border-bottom:1px solid var(--bdr)" title="Open in Jellyfin">'+escHtml(item.title)+'</a>'
         : escHtml(item.title))
 
       +' <span style="color:var(--muted);font-size:12px">'+item.year+'</span>'
@@ -8870,7 +8939,7 @@ function loadActivity() { renderLog(); }
 
 const SETTINGS_FIELDS = ['plex_url','plex_token','plex_source_id','tunarr_url',
 
-  'scan_interval_minutes','jellyfin_url','jellyfin_api_key'];
+  'scan_interval_minutes','jellyfin_url','jellyfin_api_key','plex_public_url','jellyfin_public_url'];
 
 
 
