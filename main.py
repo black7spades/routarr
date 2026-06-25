@@ -204,6 +204,14 @@ def init_db():
 
             );
 
+            CREATE TABLE IF NOT EXISTS channel_dirty (
+
+                channel_id TEXT PRIMARY KEY,
+
+                dirty_since INTEGER
+
+            );
+
         """)
 
     seed_from_env()
@@ -621,6 +629,28 @@ def unmark_routed(rating_key: str):
     with db_conn() as db:
 
         db.execute("DELETE FROM routed_items WHERE rating_key=?", (rating_key,))
+
+
+
+def mark_channel_dirty(channel_id: str):
+
+    with db_conn() as db:
+
+        db.execute(
+
+            "INSERT OR REPLACE INTO channel_dirty(channel_id, dirty_since) VALUES(?, ?)",
+
+            (channel_id, int(time.time()))
+
+        )
+
+
+
+def clear_channel_dirty(channel_id: str):
+
+    with db_conn() as db:
+
+        db.execute("DELETE FROM channel_dirty WHERE channel_id = ?", (channel_id,))
 
 
 
@@ -1803,6 +1833,8 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
         mark_routed(rk, channel_id, channel_name)
 
+        mark_channel_dirty(channel_id)
+
     return {"success": ok, "channel": channel_name, "method": method,
 
             "count": len(lineup), "missed": len(missed), "debug": None}
@@ -1954,6 +1986,8 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
     if ok:
 
         mark_routed(rk, channel_id, channel_name)
+
+        mark_channel_dirty(channel_id)
 
     return {"success": ok, "channel": channel_name, "method": "api",
 
@@ -2184,6 +2218,34 @@ async def _run_scan_once():
                     del _cache[key]
 
         _scan_state["last_scan"] = time.time()
+
+        # Auto-route new arrivals if enabled
+
+        if cfg("auto_route") == "1":
+
+            try:
+
+                async with httpx.AsyncClient() as _c:
+
+                    _items = await plex_new_content(_c, days)
+
+                    _pending = [i for i in _items if i.get("targetChannel") and not i.get("alreadyRouted")]
+
+                    for _item in _pending:
+
+                        _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item["labels"])
+
+                        if _r.get("success"):
+
+                            logger.info(f"Auto-routed: {_item['title']} → {_r.get('channel')}")
+
+                    if _pending:
+
+                        _cache.pop(f"plex_new_{days}", None)
+
+            except Exception as _exc:
+
+                logger.warning(f"Auto-route error: {_exc}")
 
     except Exception:
 
@@ -4207,11 +4269,25 @@ async def process_channel(channel_id: str, request: Request):
 
         _cache.pop("channels", None)
 
+        clear_channel_dirty(channel_id)
+
         return {"ok": True, "stats": stats}
 
     except Exception as e:
 
         return _err(e)
+
+
+
+@app.get("/api/channels/dirty")
+
+async def get_dirty_channels():
+
+    with db_conn() as db:
+
+        rows = db.execute("SELECT channel_id, dirty_since FROM channel_dirty").fetchall()
+
+    return {r["channel_id"]: r["dirty_since"] for r in rows}
 
 
 
@@ -4756,11 +4832,27 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh">
 
-    <div>
+    <div style="flex:1">
 
       <h2>Routing Rules</h2>
 
       <div class="sub">When new content arrives, these rules decide which Tunarr channel it goes to. Rules run highest-to-lowest priority; first match wins.</div>
+
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap">
+
+      <span id="auto-route-ind" style="display:none;background:var(--acc);color:var(--bg);border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700">&#x26a1; Auto</span>
+
+      <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--txt);cursor:pointer;user-select:none;white-space:nowrap">
+
+        <input type="checkbox" id="auto-route-chk" style="accent-color:var(--acc);cursor:pointer;width:14px;height:14px" onchange="setAutoRoute(this.checked)">
+
+        Auto-route
+
+      </label>
+
+      <button class="btn p sm" onclick="openAddRule()">+ Add rule</button>
 
     </div>
 
@@ -5685,6 +5777,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSections = [], tunarrLibraries = [];
 
+let _dirtyChannels = new Set();
+
+let _autoRoute = false;
+
 let _channelOverrides = {}, _channelEditRk = null;
 
 let _plexUrl = '', _plexMachineId = '';
@@ -6575,7 +6671,7 @@ function show(name, btn) {
 
   if (name==='channels')  { loadChannels(); loadHealthLog(); }
 
-  if (name==='rules')     loadRules();
+  if (name==='rules')     { loadRules(); loadAutoRouteSetting(); }
 
   if (name==='settings')  loadSettings();
 
@@ -7919,9 +8015,13 @@ function renderChannels() {
 
           : '';
 
-        return '<div class="chcard">'
+        const needsProc = _dirtyChannels.has(ch.id);
+        const dirtyBadge = needsProc ? '<span style="position:absolute;top:6px;right:6px;background:var(--acc);color:var(--bg);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;pointer-events:none">⚡ Needs processing</span>' : '';
+        return '<div class="chcard" style="position:relative">'
 
           + bg
+
+          + dirtyBadge
 
           +'<div class="chcard-content">'
 
@@ -7943,7 +8043,7 @@ function renderChannels() {
 
           +'<div class="chcard-actions">'
 
-          +'<button class="btn g sm" onclick="openProcModal(\''+ch.id+'\')">&#9881; Process</button>'
+          +'<button class="btn '+(needsProc?'p':'g')+' sm" onclick="openProcModal(\''+ch.id+'\')">&#9881; Process</button>'
 
           +'</div>'
 
@@ -7977,7 +8077,13 @@ async function loadChannels(force=false) {
 
   try {
 
-    const res = await fetch('/api/channels');
+    const [res, dirtyRes] = await Promise.all([
+
+      fetch('/api/channels'),
+
+      fetch('/api/channels/dirty').catch(() => null),
+
+    ]);
 
     clearTimeout(hintTimer);
 
@@ -7986,6 +8092,8 @@ async function loadChannels(force=false) {
     if (data.error) { chBody.innerHTML='<div class="err-box">'+data.error+'</div>'; return; }
 
     allChannels = data;
+
+    if (dirtyRes) { const d = await dirtyRes.json().catch(()=>({})); _dirtyChannels = new Set(Object.keys(d)); }
 
     renderChannels();
 
@@ -8873,6 +8981,36 @@ async function importRules(input) {
   if (!r.ok) { toast('Import error: ' + (res.error || r.status), 5000); return; }
   toast(`Imported ${res.imported} rule${res.imported!==1?'s':''}, skipped ${res.skipped}`);
   await loadRules();
+}
+
+async function loadAutoRouteSetting() {
+  try {
+    const d = await (await fetch('/api/settings')).json();
+    _autoRoute = (d.auto_route === '1' || d.auto_route === true);
+    updateAutoRouteUI();
+  } catch {}
+}
+
+function updateAutoRouteUI() {
+  const chk = document.getElementById('auto-route-chk');
+  const ind = document.getElementById('auto-route-ind');
+  if (chk) chk.checked = _autoRoute;
+  if (ind) ind.style.display = _autoRoute ? '' : 'none';
+}
+
+async function setAutoRoute(enabled) {
+  _autoRoute = enabled;
+  updateAutoRouteUI();
+  try {
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({auto_route: enabled ? '1' : '0'})
+    });
+    logAction('Auto-route ' + (enabled ? 'enabled' : 'disabled'), true, {action_type:'rule'});
+  } catch(e) {
+    logAction('Failed to save auto-route setting', false, {action_type:'rule'});
+  }
 }
 
 async function loadRules() {
