@@ -9237,7 +9237,7 @@ function renderProcQueue() {
 
     + '<div>'
 
-    + '<div style="font-size:13px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">&#9889; Needs Processing</div>'
+    + '<div style="font-size:13px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">&#9889; Process Update</div>'
 
     + '<div style="font-size:11px;color:var(--muted);">' + dirty.length + ' channel' + (dirty.length !== 1 ? 's' : '') + ' waiting to be processed</div>'
 
@@ -9246,6 +9246,8 @@ function renderProcQueue() {
     + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
 
     + '<label style="font-size:12px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pq-all" onchange="toggleAllProcQueue(this.checked)" style="width:13px;height:13px;accent-color:var(--acc);cursor:pointer"> Select All</label>'
+
+    + '<button class="btn g sm" onclick="cancelProcQueue()">Cancel</button>'
 
     + '<button class="btn p sm" onclick="processDirtySelected()">&#9881; Process Selected</button>'
 
@@ -9276,6 +9278,20 @@ function renderProcQueue() {
 function toggleAllProcQueue(checked) {
 
   document.querySelectorAll('.pq-ch').forEach(cb => cb.checked = checked);
+
+}
+
+
+
+function cancelProcQueue() {
+
+  _dirtyChannels = new Set();
+
+  renderProcQueue();
+
+  renderChannels();
+
+  toast('Process queue cleared');
 
 }
 
