@@ -1053,6 +1053,12 @@ async def plex_new_content(client, days=14):
 
             routed   = routed_db.get(rk_str)
 
+            if resolved and resolved[0] == "__skip__" and not routed:
+
+                mark_routed(rk_str, "__skip__", "Skip")
+
+                routed = {"channel_id": "__skip__", "channel_name": "Skip", "routed_at": int(time.time())}
+
             items.append({
 
                 "ratingKey":         rk_str,
@@ -1360,6 +1366,12 @@ async def jellyfin_new_content(client, days: int = 14) -> list:
             rk_str   = f"jf:{jf_id}"
 
             routed   = routed_db.get(rk_str)
+
+            if resolved and resolved[0] == "__skip__" and not routed:
+
+                mark_routed(rk_str, "__skip__", "Skip")
+
+                routed = {"channel_id": "__skip__", "channel_name": "Skip", "routed_at": int(time.time())}
 
             items.append({
 
@@ -1801,11 +1813,17 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     if override_channel_id:
 
-        channels = await tunarr_channels(client)
+        if override_channel_id == "__skip__":
 
-        ch = next((c for c in channels if c["id"] == override_channel_id), None)
+            resolved = ("__skip__", "Skip")
 
-        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+        else:
+
+            channels = await tunarr_channels(client)
+
+            ch = next((c for c in channels if c["id"] == override_channel_id), None)
+
+            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -1826,6 +1844,12 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
                 "channel": None}
 
     channel_id, channel_name = resolved
+
+    if channel_id == "__skip__":
+
+        mark_routed(rk, "__skip__", "Skip")
+
+        return {"success": True, "channel": "Skip", "method": "skip", "count": 0, "missed": 0, "debug": None}
 
     lib_id = section_to_lib(section_id)
 
@@ -1949,11 +1973,17 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     if override_channel_id:
 
-        channels = await tunarr_channels(client)
+        if override_channel_id == "__skip__":
 
-        ch = next((c for c in channels if c["id"] == override_channel_id), None)
+            resolved = ("__skip__", "Skip")
 
-        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+        else:
+
+            channels = await tunarr_channels(client)
+
+            ch = next((c for c in channels if c["id"] == override_channel_id), None)
+
+            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -1970,6 +2000,12 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
                 "channel": None}
 
     channel_id, channel_name = resolved
+
+    if channel_id == "__skip__":
+
+        mark_routed(rk, "__skip__", "Skip")
+
+        return {"success": True, "channel": "Skip", "method": "skip", "count": 0, "missed": 0, "debug": None}
 
 
 
@@ -7245,13 +7281,15 @@ function setHomePage(pg) {
 
 function _chanOpts(selectedId) {
 
+  const skip = '<option value="__skip__"' + ('__skip__' === selectedId ? ' selected' : '') + ' data-name="Skip (don\'t route)">&#8960; Skip (don\'t route)</option>';
+
   let html = allChannels.map(c =>
 
     '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(c.name) + '">CH ' + c.number + ' — ' + escHtml(c.name) + '</option>'
 
   ).join('');
 
-  return html;
+  return skip + html;
 
 }
 
@@ -7689,6 +7727,10 @@ function renderArrivals() {
 
           + '<option value="">-- pick channel --</option>'+_opts+'</select>';
 
+    } else if (_chId === '__skip__') {
+
+      ch = '<span onclick="openChannelEdit(\''+rk+'\')" title="Click to change" style="cursor:pointer;font-size:12px;color:var(--muted)">&#8960; skip</span>';
+
     } else if (_chName) {
 
       const _ovDot = _ov ? ' <span title="Manual override" style="color:var(--acc);font-size:9px">*</span>' : '';
@@ -7727,9 +7769,17 @@ function renderArrivals() {
 
       const dest = item.routedTo ? ' → '+escHtml(item.routedTo) : '';
 
-      btn = '<span style="font-size:12px;color:var(--green)">✓'+dest+'</span>'
+      const _reRouteBtn = ' <button class="btn g sm" style="font-size:11px" onclick="rerouteItem(\''+rk+'\',\''+item.sectionId+'\',\''+item.labels.join(",")+'\')" title="Force re-route">Re-route</button>';
 
-           +' <button class="btn g sm" style="font-size:11px" onclick="rerouteItem(\''+rk+'\',\''+item.sectionId+'\',\''+item.labels.join(",")+'\')" title="Force re-route">Re-route</button>';
+      if (item.routedTo === 'Skip') {
+
+        btn = '<span style="font-size:12px;color:var(--muted)">&#8960; skipped</span>' + _reRouteBtn;
+
+      } else {
+
+        btn = '<span style="font-size:12px;color:var(--green)">✓'+dest+'</span>' + _reRouteBtn;
+
+      }
 
     } else if (st==='fail') {
 
