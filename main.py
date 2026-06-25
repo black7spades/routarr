@@ -228,22 +228,6 @@ def init_db():
 
             );
 
-            CREATE TABLE IF NOT EXISTS filler_programs (
-
-                filler_id   TEXT NOT NULL,
-
-                program_id  TEXT NOT NULL,
-
-                duration    INTEGER DEFAULT 0,
-
-                prog_type   TEXT DEFAULT 'content',
-
-                added_at    INTEGER NOT NULL DEFAULT 0,
-
-                PRIMARY KEY (filler_id, program_id)
-
-            );
-
         """)
 
     seed_from_env()
@@ -556,14 +540,6 @@ def migrate_db():
 
         try:
 
-            db.execute("ALTER TABLE filler_programs ADD COLUMN program_json TEXT DEFAULT ''")
-
-        except Exception:
-
-            pass  # already exists
-
-        try:
-
             db.execute("ALTER TABLE routing_rules ADD COLUMN auto_route INTEGER DEFAULT 0")
 
         except Exception:
@@ -715,92 +691,6 @@ def clear_channel_dirty(channel_id: str):
     with db_conn() as db:
 
         db.execute("DELETE FROM channel_dirty WHERE channel_id = ?", (channel_id,))
-
-
-
-def db_track_filler_programs(filler_id: str, programs: list):
-
-    """Upsert programs into the local filler tracking table."""
-
-    now = int(time.time())
-
-    with db_conn() as db:
-
-        for p in programs:
-
-            db.execute(
-
-                "INSERT OR REPLACE INTO filler_programs"
-
-                "(filler_id, program_id, duration, prog_type, added_at, program_json)"
-
-                " VALUES(?,?,?,?,?,?)",
-
-                (filler_id, p["id"], p.get("duration", 0), p.get("type", "content"), now,
-
-                 p.get("_tp", ""))
-
-            )
-
-
-
-def db_get_filler_programs(filler_id: str) -> list:
-
-    """Return all tracked programs for a filler list as lineup-format dicts."""
-
-    with db_conn() as db:
-
-        rows = db.execute(
-
-            "SELECT program_id, duration, prog_type FROM filler_programs"
-
-            " WHERE filler_id=? ORDER BY added_at",
-
-            (filler_id,)
-
-        ).fetchall()
-
-    return [{"id": r[0], "duration": r[1], "type": r[2]} for r in rows]
-
-
-
-def db_get_filler_programs_api(filler_id: str) -> list:
-
-    """Return programs for filler PUT: [{duration, program: {full obj}}]."""
-
-    import json as _j
-
-    with db_conn() as db:
-
-        rows = db.execute(
-
-            "SELECT program_id, duration, prog_type, program_json FROM filler_programs"
-
-            " WHERE filler_id=? ORDER BY added_at",
-
-            (filler_id,)
-
-        ).fetchall()
-
-    result = []
-
-    for r in rows:
-
-        try:
-
-            prog_obj = _j.loads(r[3]) if r[3] else {}
-
-        except Exception:
-
-            prog_obj = {}
-
-        if not prog_obj:
-
-            prog_obj = {"id": r[0]}
-
-        result.append({"type": r[2] or "content", "duration": r[1], "program": prog_obj})
-
-    return result
 
 
 
@@ -1879,14 +1769,6 @@ async def _channel_existing_ids(client, channel_id: str) -> set:
 
     try:
 
-        if channel_id.startswith("filler:"):
-
-            ids = {p["id"] for p in db_get_filler_programs(channel_id[7:])}
-
-            cache_set(cache_key, ids)
-
-            return ids
-
         r = await client.get(f"{tunarr}/api/channels/{channel_id}/programming",
 
                              params={"offset": 0, "limit": 100000}, timeout=60)
@@ -1923,21 +1805,11 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     if override_channel_id:
 
-        if override_channel_id.startswith("filler:"):
+        channels = await tunarr_channels(client)
 
-            _fls = await _get_filler_lists(client)
+        ch = next((c for c in channels if c["id"] == override_channel_id), None)
 
-            _fl = next((f for f in _fls if f["id"] == override_channel_id[7:]), None)
-
-            resolved = (override_channel_id, _fl["name"] if _fl else override_channel_id[7:])
-
-        else:
-
-            channels = await tunarr_channels(client)
-
-            ch = next((c for c in channels if c["id"] == override_channel_id), None)
-
-            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -1987,8 +1859,6 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     lineup, missed = [], []
 
-    _is_filler = channel_id.startswith("filler:")
-
     for ep_rk in ep_rks:
 
         prog = lib_index.get(ep_rk)
@@ -1996,12 +1866,6 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
         if prog:
 
             item = {"type": "content", "id": prog["id"], "duration": prog["duration"]}
-
-            if _is_filler:
-
-                import json as _j
-
-                item["_tp"] = _j.dumps(prog.get("program", {}))
 
             lineup.append(item)
 
@@ -2047,47 +1911,11 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     tunarr = cfg("tunarr_url")
 
-    if channel_id.startswith("filler:"):
+    clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
 
-        filler_id = channel_id[7:]
+    r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
 
-        import json as _j
-
-        try:
-
-            gr = await client.get(f"{tunarr}/api/filler-lists/{filler_id}", timeout=30)
-
-            existing_progs = gr.json().get("programs", []) if gr.status_code == 200 else []
-
-        except Exception:
-
-            existing_progs = []
-
-        existing_ids = {p.get("program", {}).get("id") for p in existing_progs}
-
-        new_progs = []
-
-        for item in new_lineup:
-
-            prog_obj = _j.loads(item["_tp"]) if item.get("_tp") else {}
-
-            if prog_obj and item["id"] not in existing_ids:
-
-                new_progs.append({"type": item.get("type", "content"), "duration": item["duration"], "program": prog_obj})
-
-        all_progs = existing_progs + new_progs
-
-        r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
-
-                             json={"name": channel_name, "programs": all_progs}, timeout=30)
-
-    else:
-
-        clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
-
-        r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
-
-                              json={"type": "manual", "lineup": clean_lineup, "append": True}, timeout=30)
+                          json={"type": "manual", "lineup": clean_lineup, "append": True}, timeout=30)
 
     ok, method = r.status_code == 200, "api"
 
@@ -2107,9 +1935,7 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
         mark_routed(rk, channel_id, channel_name)
 
-        if not channel_id.startswith("filler:"):
-
-            mark_channel_dirty(channel_id)
+        mark_channel_dirty(channel_id)
 
     return {"success": ok, "channel": channel_name, "method": method,
 
@@ -2127,21 +1953,11 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     if override_channel_id:
 
-        if override_channel_id.startswith("filler:"):
+        channels = await tunarr_channels(client)
 
-            _fls = await _get_filler_lists(client)
+        ch = next((c for c in channels if c["id"] == override_channel_id), None)
 
-            _fl = next((f for f in _fls if f["id"] == override_channel_id[7:]), None)
-
-            resolved = (override_channel_id, _fl["name"] if _fl else override_channel_id[7:])
-
-        else:
-
-            channels = await tunarr_channels(client)
-
-            ch = next((c for c in channels if c["id"] == override_channel_id), None)
-
-            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -2217,8 +2033,6 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     lineup, missed = [], []
 
-    _is_filler = channel_id.startswith("filler:")
-
     for ep_id in jf_ids:
 
         prog = index.get(ep_id)
@@ -2226,12 +2040,6 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
         if prog:
 
             item = {"type": "content", "id": prog["id"], "duration": prog["duration"]}
-
-            if _is_filler:
-
-                import json as _j
-
-                item["_tp"] = _j.dumps(prog.get("program", {}))
 
             lineup.append(item)
 
@@ -2267,51 +2075,15 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     tunarr = cfg("tunarr_url")
 
-    if channel_id.startswith("filler:"):
+    clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
 
-        filler_id = channel_id[7:]
+    r = await client.post(
 
-        import json as _j
+        f"{tunarr}/api/channels/{channel_id}/programming",
 
-        try:
+        json={"type": "manual", "lineup": clean_lineup, "append": True},
 
-            gr = await client.get(f"{tunarr}/api/filler-lists/{filler_id}", timeout=30)
-
-            existing_progs = gr.json().get("programs", []) if gr.status_code == 200 else []
-
-        except Exception:
-
-            existing_progs = []
-
-        existing_ids = {p.get("program", {}).get("id") for p in existing_progs}
-
-        new_progs = []
-
-        for item in new_lineup:
-
-            prog_obj = _j.loads(item["_tp"]) if item.get("_tp") else {}
-
-            if prog_obj and item["id"] not in existing_ids:
-
-                new_progs.append({"type": item.get("type", "content"), "duration": item["duration"], "program": prog_obj})
-
-        all_progs = existing_progs + new_progs
-
-        r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
-
-                             json={"name": channel_name, "programs": all_progs}, timeout=30)
-
-    else:
-
-        clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
-
-        r = await client.post(
-
-            f"{tunarr}/api/channels/{channel_id}/programming",
-
-            json={"type": "manual", "lineup": clean_lineup, "append": True},
-
-            timeout=30)
+        timeout=30)
 
     ok = r.status_code == 200
 
@@ -2321,9 +2093,7 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
         mark_routed(rk, channel_id, channel_name)
 
-        if not channel_id.startswith("filler:"):
-
-            mark_channel_dirty(channel_id)
+        mark_channel_dirty(channel_id)
 
     return {"success": ok, "channel": channel_name, "method": "api",
 
@@ -2930,7 +2700,7 @@ class _AuthMW(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if path in ('/login', '/logout') or path in ('/api/health', '/api/channel-idents', '/api/proxy-image', '/api/debug/tunarr-filler-probe'):
+        if path in ('/login', '/logout') or path in ('/api/health', '/api/channel-idents', '/api/proxy-image'):
 
             return await call_next(request)
 
@@ -4435,112 +4205,6 @@ async def channels():
 
 
 
-async def _get_filler_lists(client) -> list:
-
-    tunarr = cfg("tunarr_url")
-
-    if not tunarr:
-
-        return []
-
-    try:
-
-        r = await client.get(f"{tunarr}/api/filler-lists", timeout=10)
-
-        if r.status_code == 200:
-
-            return r.json()
-
-    except Exception:
-
-        pass
-
-    return []
-
-
-
-@app.get("/api/debug/tunarr-filler-probe")
-
-async def debug_tunarr_filler_probe():
-
-    """Probe Tunarr filler list API to find the correct write format."""
-
-    tunarr = cfg("tunarr_url")
-
-    if not tunarr:
-
-        return {"error": "tunarr_url not configured"}
-
-    results = {}
-
-    try:
-
-        async with httpx.AsyncClient(timeout=10) as c:
-
-            # GET the first filler list
-            r0 = await c.get(f"{tunarr}/api/filler-lists")
-
-            lists = r0.json() if r0.status_code == 200 else []
-
-            if not lists:
-
-                return {"error": "no filler lists found"}
-
-            fid = lists[0]["id"]
-
-            results["filler_list_object"] = lists[0]
-
-            # GET the individual filler list to see full shape
-            r1 = await c.get(f"{tunarr}/api/filler-lists/{fid}")
-
-            results["GET /api/filler-lists/{id}"] = r1.status_code
-
-            if r1.status_code == 200:
-
-                results["filler_detail"] = r1.json()
-
-            # Try PUT with just the object we got back (no-op round-trip)
-            if r1.status_code == 200:
-
-                r2 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json=r1.json())
-
-                results["PUT with existing object"] = {"status": r2.status_code, "body": r2.text[:300]}
-
-            # Try PUT with name only
-            name = lists[0].get("name", "test")
-
-            r3 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json={"name": name})
-
-            results["PUT with name only"] = {"status": r3.status_code, "body": r3.text[:300]}
-
-            # Try PUT with name + empty programs array
-            r4 = await c.put(f"{tunarr}/api/filler-lists/{fid}", json={"name": name, "programs": []})
-
-            results["PUT with name+programs"] = {"status": r4.status_code, "body": r4.text[:300]}
-
-    except Exception as e:
-
-        results["error"] = str(e)
-
-    return results
-
-
-
-@app.get("/api/filler-lists")
-
-async def get_filler_lists():
-
-    try:
-
-        async with httpx.AsyncClient() as c:
-
-            return await _get_filler_lists(c)
-
-    except Exception as e:
-
-        return _err(e)
-
-
 
 @app.get("/api/channels/now-playing")
 
@@ -5911,15 +5575,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 
-  <div class="sh" style="margin-top:28px">
 
-    <div><h3 style="margin:0">Filler Lists</h3><div class="sub">Tunarr filler lists &mdash; route short clips and bumpers to these as an alternative to channels</div></div>
-
-    <button class="btn g sm" onclick="loadFillerLists()">Refresh</button>
-
-  </div>
-
-  <div id="filler-body"><div class="loading">Loading&hellip;</div></div>
 
 
 
@@ -6780,7 +6436,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <script>
 
-let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], _fillerLists = [], plexSections = [], tunarrLibraries = [];
+let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSections = [], tunarrLibraries = [];
 
 let _dirtyChannels = new Set();
 
@@ -7741,120 +7397,11 @@ function _chanOpts(selectedId) {
 
   ).join('');
 
-  if (_fillerLists.length) {
-
-    html += '<optgroup label="Filler Lists">';
-
-    html += _fillerLists.map(f =>
-
-      '<option value="filler:' + f.id + '"' + ('filler:' + f.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(f.name) + '">□ ' + escHtml(f.name) + '</option>'
-
-    ).join('');
-
-    html += '</optgroup>';
-
-  }
-
   return html;
 
 }
 
 
-
-async function loadFillerLists() {
-
-  const el = document.getElementById('filler-body');
-
-  if (el) el.innerHTML = '<div class="loading">Loading&hellip;</div>';
-
-  try {
-
-    const d = await (await fetch('/api/filler-lists')).json();
-
-    _fillerLists = Array.isArray(d) ? d : [];
-
-  } catch(e) {
-
-    _fillerLists = [];
-
-  }
-
-  renderFillerLists();
-
-}
-
-
-
-function renderFillerLists() {
-
-  const el = document.getElementById('filler-body');
-
-  if (!el) return;
-
-  if (!_fillerLists.length) {
-
-    el.innerHTML = '<div class="empty">No filler lists found in Tunarr.</div>';
-
-    return;
-
-  }
-
-  el.innerHTML = '<div class="grid">'
-
-    + _fillerLists.map(f => {
-
-        const cnt = f.contentCount != null ? f.contentCount : (f.count != null ? f.count : 0);
-
-        return '<div class="chcard" style="position:relative;border:1px solid var(--bdr)">'
-
-          + '<div class="chcard-content">'
-
-          + '<div>'
-
-          + '<div class="chnum" style="color:var(--muted);font-size:10px;letter-spacing:.8px">FILLER</div>'
-
-          + '<div class="chtitle">' + escHtml(f.name) + '</div>'
-
-          + '</div>'
-
-          + '<div>'
-
-          + '<div class="chcount">' + cnt.toLocaleString() + '</div>'
-
-          + '<div class="chcl">programs</div>'
-
-          + '</div>'
-
-          + '</div>'
-
-          + '<div class="chcard-btns">'
-
-          + '<button class="btn g sm" onclick="processFiller(' + JSON.stringify(f.id) + ',' + JSON.stringify(f.name) + ')" title="Route selected items to this filler list">&#9881; Process</button>'
-
-          + '</div>'
-
-          + '</div>';
-
-      }).join('') + '</div>';
-
-}
-
-async function processFiller(fillerId, fillerName) {
-  const rks = Array.from(checkedItems);
-  if (!rks.length) { toast('Select items first'); return; }
-  const fid = 'filler:' + fillerId;
-  let ok = 0;
-  for (const rk of rks) {
-    const item = arrivals.find(a => a.ratingKey === rk);
-    if (!item) continue;
-    _channelOverrides[rk] = {channel_id: fid, channel_name: fillerName};
-    await routeOne(rk, item.sectionId, item.labels.join(','));
-    checkedItems.delete(rk);
-    ok++;
-  }
-  updateActionBar();
-  toast(ok + ' item' + (ok !== 1 ? 's' : '') + ' sent to ' + fillerName);
-}
 
 // ── Toast
 
@@ -8557,12 +8104,6 @@ async function updateActionBar() {
     if (!allChannels.length) {
 
       try { allChannels = await (await fetch('/api/channels')).json(); } catch {}
-
-    }
-
-    if (!_fillerLists.length) {
-
-      try { const d = await (await fetch('/api/filler-lists')).json(); if (Array.isArray(d)) _fillerLists = d; } catch {}
 
     }
 
@@ -9299,8 +8840,6 @@ async function loadChannels(force=false) {
     renderChannels();
 
     loadChannelSources();
-
-    loadFillerLists();
 
     preloadChannelImages();
 
