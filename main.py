@@ -554,6 +554,22 @@ def migrate_db():
 
             pass  # already exists
 
+        try:
+
+            db.execute("ALTER TABLE filler_programs ADD COLUMN program_json TEXT DEFAULT ''")
+
+        except Exception:
+
+            pass  # already exists
+
+        try:
+
+            db.execute("ALTER TABLE routing_rules ADD COLUMN auto_route INTEGER DEFAULT 0")
+
+        except Exception:
+
+            pass  # already exists
+
 migrate_db()
 
 
@@ -716,11 +732,13 @@ def db_track_filler_programs(filler_id: str, programs: list):
 
                 "INSERT OR REPLACE INTO filler_programs"
 
-                "(filler_id, program_id, duration, prog_type, added_at)"
+                "(filler_id, program_id, duration, prog_type, added_at, program_json)"
 
-                " VALUES(?,?,?,?,?)",
+                " VALUES(?,?,?,?,?,?)",
 
-                (filler_id, p["id"], p.get("duration", 0), p.get("type", "content"), now)
+                (filler_id, p["id"], p.get("duration", 0), p.get("type", "content"), now,
+
+                 p.get("_tp", ""))
 
             )
 
@@ -743,6 +761,46 @@ def db_get_filler_programs(filler_id: str) -> list:
         ).fetchall()
 
     return [{"id": r[0], "duration": r[1], "type": r[2]} for r in rows]
+
+
+
+def db_get_filler_programs_api(filler_id: str) -> list:
+
+    """Return programs for filler PUT: [{duration, program: {full obj}}]."""
+
+    import json as _j
+
+    with db_conn() as db:
+
+        rows = db.execute(
+
+            "SELECT program_id, duration, program_json FROM filler_programs"
+
+            " WHERE filler_id=? ORDER BY added_at",
+
+            (filler_id,)
+
+        ).fetchall()
+
+    result = []
+
+    for r in rows:
+
+        try:
+
+            prog_obj = _j.loads(r[2]) if r[2] else {}
+
+        except Exception:
+
+            prog_obj = {}
+
+        if not prog_obj:
+
+            prog_obj = {"id": r[0]}
+
+        result.append({"duration": r[1], "program": prog_obj})
+
+    return result
 
 
 
@@ -1271,7 +1329,7 @@ async def jellyfin_lib_index(client, tunarr_lib_id: str) -> dict:
 
                 if ident.get("type") == "jellyfin":
 
-                    index[ident["id"]] = {"id": p["id"], "duration": p["duration"]}
+                    index[ident["id"]] = p
 
         cache_set(f"jflib_{tunarr_lib_id}", index)
 
@@ -1491,7 +1549,7 @@ async def tunarr_lib_index(client, lib_id):
 
             if ident.get("type") == "plex":
 
-                index[ident["id"]] = {"id": p["id"], "duration": p["duration"]}
+                index[ident["id"]] = p
 
     cache_set(f"lib_{lib_id}", index)
 
@@ -1929,13 +1987,23 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     lineup, missed = [], []
 
+    _is_filler = channel_id.startswith("filler:")
+
     for ep_rk in ep_rks:
 
         prog = lib_index.get(ep_rk)
 
         if prog:
 
-            lineup.append({"type": "content", "id": prog["id"], "duration": prog["duration"]})
+            item = {"type": "content", "id": prog["id"], "duration": prog["duration"]}
+
+            if _is_filler:
+
+                import json as _j
+
+                item["_tp"] = _j.dumps(prog.get("program", {}))
+
+            lineup.append(item)
 
         else:
 
@@ -1985,7 +2053,7 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
         db_track_filler_programs(filler_id, new_lineup)
 
-        all_progs = db_get_filler_programs(filler_id)
+        all_progs = db_get_filler_programs_api(filler_id)
 
         r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
 
@@ -1993,9 +2061,11 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     else:
 
+        clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
+
         r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
 
-                              json={"type": "manual", "lineup": new_lineup, "append": True}, timeout=30)
+                              json={"type": "manual", "lineup": clean_lineup, "append": True}, timeout=30)
 
     ok, method = r.status_code == 200, "api"
 
@@ -2125,13 +2195,23 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     lineup, missed = [], []
 
+    _is_filler = channel_id.startswith("filler:")
+
     for ep_id in jf_ids:
 
         prog = index.get(ep_id)
 
         if prog:
 
-            lineup.append({"type": "content", "id": prog["id"], "duration": prog["duration"]})
+            item = {"type": "content", "id": prog["id"], "duration": prog["duration"]}
+
+            if _is_filler:
+
+                import json as _j
+
+                item["_tp"] = _j.dumps(prog.get("program", {}))
+
+            lineup.append(item)
 
         else:
 
@@ -2171,7 +2251,7 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
         db_track_filler_programs(filler_id, new_lineup)
 
-        all_progs = db_get_filler_programs(filler_id)
+        all_progs = db_get_filler_programs_api(filler_id)
 
         r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
 
@@ -2179,11 +2259,13 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     else:
 
+        clean_lineup = [{"type": i["type"], "id": i["id"], "duration": i["duration"]} for i in new_lineup]
+
         r = await client.post(
 
             f"{tunarr}/api/channels/{channel_id}/programming",
 
-            json={"type": "manual", "lineup": new_lineup, "append": True},
+            json={"type": "manual", "lineup": clean_lineup, "append": True},
 
             timeout=30)
 
@@ -2435,7 +2517,11 @@ async def _run_scan_once():
 
         _ar_ch = set(x for x in (cfg("auto_route_channels") or "").split(",") if x.strip())
 
-        _ar_rules = set(x for x in (cfg("auto_route_rules") or "").split(",") if x.strip())
+        with db_conn() as _ardb:
+
+            _ar_rows = _ardb.execute("SELECT id FROM routing_rules WHERE auto_route=1").fetchall()
+
+        _ar_rules = {str(r["id"]) for r in _ar_rows}
 
         if _ar_global or _ar_ch or _ar_rules:
 
@@ -3864,7 +3950,7 @@ async def update_routing(rule_id: int, request: Request):
 
     with db_conn() as db:
 
-        allowed = ["name", "section_id", "label", "channel_id", "channel_name", "priority", "source", "label_excl", "title_filter", "title_excl"]
+        allowed = ["name", "section_id", "label", "channel_id", "channel_name", "priority", "source", "label_excl", "title_filter", "title_excl", "auto_route"]
 
         fields = [f for f in allowed if f in body]
 
@@ -3939,47 +4025,39 @@ async def delete_routing(rule_id: int):
 
 async def get_routing_auto_route():
 
-    raw = cfg("auto_route_rules") or ""
+    with db_conn() as db:
 
-    enabled = [x for x in raw.split(",") if x.strip()]
+        rows = db.execute("SELECT id FROM routing_rules WHERE auto_route=1").fetchall()
 
-    return {"enabled": enabled}
+    return {"enabled": [str(r["id"]) for r in rows]}
 
 
 
 @app.put("/api/routing/auto-route")
 
-async def set_routing_auto_route(body: dict):
+async def set_routing_auto_route(request: Request):
 
-    raw = cfg("auto_route_rules") or ""
+    body = await request.json()
 
-    enabled = set(x for x in raw.split(",") if x.strip())
+    with db_conn() as db:
 
-    if body.get("enable_all"):
+        if body.get("enable_all"):
 
-        with db_conn() as db:
+            db.execute("UPDATE routing_rules SET auto_route=1")
 
-            rows = db.execute("SELECT id FROM routing_rules").fetchall()
+        else:
 
-        enabled = {str(r["id"]) for r in rows}
+            rule_id = body.get("rule_id")
 
-    else:
+            if rule_id is not None:
 
-        rule_id = str(body.get("rule_id", ""))
+                val = 1 if body.get("enabled") else 0
 
-        if rule_id:
+                db.execute("UPDATE routing_rules SET auto_route=? WHERE id=?", (val, int(rule_id)))
 
-            if body.get("enabled"):
+        rows = db.execute("SELECT id FROM routing_rules WHERE auto_route=1").fetchall()
 
-                enabled.add(rule_id)
-
-            else:
-
-                enabled.discard(rule_id)
-
-    cfg_set({"auto_route_rules": ",".join(enabled)})
-
-    return {"enabled": list(enabled)}
+    return {"enabled": [str(r["id"]) for r in rows]}
 
 
 
@@ -3991,7 +4069,7 @@ async def export_routing():
 
         rows = db.execute(
 
-            "SELECT name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source"
+            "SELECT name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source, auto_route"
 
             " FROM routing_rules ORDER BY priority DESC, id"
 
@@ -4081,9 +4159,9 @@ async def import_routing(request: Request, mode: str = "merge"):
 
             db.execute(
 
-                "INSERT INTO routing_rules (name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source)"
+                "INSERT INTO routing_rules (name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source, auto_route)"
 
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
 
                 (
 
@@ -4106,6 +4184,8 @@ async def import_routing(request: Request, mode: str = "merge"):
                     int(rule.get("priority", 0)),
 
                     rule.get("source", "plex"),
+
+                    int(rule.get("auto_route", 0)),
 
                 ),
 
@@ -10525,12 +10605,15 @@ async function toggleRuleAutoRoute(ruleId, enabled) {
   _renderRulesTable();
   if (document.getElementById('page-flows')?.classList.contains('on')) renderFlows();
   try {
-    await fetch('/api/routing/auto-route', {
+    const res = await fetch('/api/routing/'+ruleId, {
       method: 'PUT',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({rule_id: ruleId, enabled})
+      body: JSON.stringify({auto_route: enabled ? 1 : 0})
     });
-  } catch {}
+    toast(enabled ? '⚡ Auto-route on' : 'Auto-route off');
+  } catch(e) {
+    toast('Failed to save auto-route setting');
+  }
 }
 
 async function enableAllRulesAutoRoute() {
@@ -10543,6 +10626,7 @@ async function enableAllRulesAutoRoute() {
       body: JSON.stringify({enable_all: true})
     });
     logAction('Auto-route enabled for all rules', true, {action_type:'rule'});
+    toast('⚡ Auto-route enabled for all rules');
   } catch {}
 }
 
@@ -10582,14 +10666,11 @@ async function setAutoRoute(enabled) {
 
 async function loadRules() {
 
-  const [rulesRes, arRes] = await Promise.all([
-    fetch('/api/routing'),
-    fetch('/api/routing/auto-route').catch(() => null),
-  ]);
+  const rulesRes = await fetch('/api/routing');
 
   const rules = await rulesRes.json();
 
-  if (arRes) { const ar = await arRes.json().catch(()=>({})); _autoRouteRules = new Set((ar.enabled || []).map(String)); }
+  _autoRouteRules = new Set(rules.filter(r => r.auto_route).map(r => String(r.id)));
 
   _rulesCache = rules;
 
