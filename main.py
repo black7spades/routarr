@@ -21,7 +21,7 @@ Optional env vars (pre-fill empty settings on first start):
 
 """
 
-import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging, urllib.parse
+import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging, urllib.parse, subprocess
 
 from html import unescape
 
@@ -179,6 +179,28 @@ def init_db():
                 username TEXT NOT NULL,
 
                 expires_at INTEGER NOT NULL
+
+            );
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                ts INTEGER NOT NULL,
+
+                ok INTEGER DEFAULT 1,
+
+                msg TEXT NOT NULL,
+
+                action_type TEXT DEFAULT '',
+
+                source TEXT DEFAULT '',
+
+                library TEXT DEFAULT '',
+
+                channel TEXT DEFAULT '',
+
+                title TEXT DEFAULT ''
 
             );
 
@@ -2568,6 +2590,174 @@ async def clear_health_log():
 
 
 
+@app.post("/api/activity")
+
+async def post_activity(request: Request):
+
+    body = await request.json()
+
+    ts = int(time.time())
+
+    ok = 1 if body.get("ok", True) else 0
+
+    msg = str(body.get("msg", ""))[:500]
+
+    action_type = str(body.get("action_type", ""))[:50]
+
+    source = str(body.get("source", ""))[:100]
+
+    library = str(body.get("library", ""))[:100]
+
+    channel = str(body.get("channel", ""))[:100]
+
+    title = str(body.get("title", ""))[:200]
+
+    cutoff = ts - 30 * 86400
+
+    with db_conn() as db:
+
+        db.execute("DELETE FROM activity_log WHERE ts < ?", (cutoff,))
+
+        db.execute(
+
+            "INSERT INTO activity_log(ts,ok,msg,action_type,source,library,channel,title) VALUES(?,?,?,?,?,?,?,?)",
+
+            (ts, ok, msg, action_type, source, library, channel, title)
+
+        )
+
+    return {"ok": True}
+
+
+
+@app.get("/api/activity")
+
+async def get_activity(
+
+    action_type: str = "",
+
+    source: str = "",
+
+    library: str = "",
+
+    channel: str = "",
+
+    q: str = "",
+
+    ok: Optional[str] = None,
+
+    limit: int = 500,
+
+):
+
+    wheres: list = []
+
+    params: list = []
+
+    if action_type:
+
+        wheres.append("action_type = ?")
+
+        params.append(action_type)
+
+    if source:
+
+        wheres.append("source LIKE ?")
+
+        params.append(f"%{source}%")
+
+    if library:
+
+        wheres.append("library LIKE ?")
+
+        params.append(f"%{library}%")
+
+    if channel:
+
+        wheres.append("channel LIKE ?")
+
+        params.append(f"%{channel}%")
+
+    if q:
+
+        wheres.append("(title LIKE ? OR msg LIKE ?)")
+
+        params.extend([f"%{q}%", f"%{q}%"])
+
+    if ok is not None:
+
+        wheres.append("ok = ?")
+
+        params.append(1 if ok == "1" else 0)
+
+    sql = "SELECT * FROM activity_log"
+
+    if wheres:
+
+        sql += " WHERE " + " AND ".join(wheres)
+
+    sql += " ORDER BY ts DESC LIMIT ?"
+
+    params.append(limit)
+
+    with db_conn() as db:
+
+        rows = db.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+
+@app.delete("/api/activity")
+
+async def clear_activity():
+
+    with db_conn() as db:
+
+        db.execute("DELETE FROM activity_log")
+
+    return {"ok": True}
+
+
+
+@app.get("/api/changelog")
+
+async def get_changelog():
+
+    try:
+
+        result = subprocess.run(
+
+            ["git", "log", "--oneline", "-3"],
+
+            capture_output=True,
+
+            text=True,
+
+            timeout=5,
+
+            cwd=str(Path(__file__).parent),
+
+        )
+
+        entries = []
+
+        for line in (result.stdout.strip().split("\n") if result.stdout.strip() else []):
+
+            if " " in line:
+
+                sha, _, message = line.partition(" ")
+
+                entries.append({"sha": sha[:7], "message": message})
+
+        return {"entries": entries}
+
+    except Exception as exc:
+
+        return {"entries": [], "error": str(exc)}
+
+
+
 @app.get("/api/versions")
 
 async def get_versions():
@@ -4354,7 +4544,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab"     onclick="show('channels',this)">Channels</button>
 
-    <button class="tab"     onclick="show('activity',this);loadHealthLog()">Log</button>
+    <button class="tab"     onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
 
     <button class="tab"     onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
 
@@ -4680,6 +4870,20 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div id="ch-body"><div class="loading">Loading&hellip;</div></div>
 
+
+
+  <div class="sh" style="margin-top:28px">
+
+    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries logged here</div></div>
+
+    <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
+
+    <button class="btn g sm" onclick="clearHealthLog()">Clear</button>
+
+  </div>
+
+  <div id="health-log-body"><div class="empty">No health events yet — first check runs 90 seconds after startup.</div></div>
+
 </div>
 
 
@@ -4690,75 +4894,55 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh">
 
-    <div><h2>Log</h2><div class="sub">Actions taken by Routarr this session — routes, genre edits, channel processing</div></div>
+    <div><h2>Log</h2><div class="sub">Persistent — up to 30 days of routes, genre edits, channel processing</div></div>
 
     <button class="btn g sm" onclick="clearLog()">Clear</button>
 
   </div>
 
-  <div id="act-body"><div class="empty">No actions yet this session.</div></div>
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+
+    <input id="act-search" placeholder="Search&hellip;" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px;outline:none;width:200px" oninput="loadActivityLog()">
+
+    <select id="act-type-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="loadActivityLog()">
+
+      <option value="">All actions</option>
+
+      <option value="route">Route</option>
+
+      <option value="genre">Genre</option>
+
+      <option value="rule">Rule</option>
+
+      <option value="process">Process</option>
+
+      <option value="scan">Scan</option>
+
+    </select>
+
+    <select id="act-status-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="loadActivityLog()">
+
+      <option value="">All results</option>
+
+      <option value="1">Success only</option>
+
+      <option value="0">Failures only</option>
+
+    </select>
+
+  </div>
+
+  <div id="act-body"><div class="empty">No log entries yet.</div></div>
 
 
 
   <div class="sh" style="margin-top:28px">
 
-    <div><h3 style="margin:0">Changelog</h3><div class="sub">Version history</div></div>
-
-
+    <div><h3 style="margin:0">Changelog</h3><div class="sub">Recent commits</div></div>
 
   </div>
 
-
-
-  <div class="scard" style="margin-top:10px">
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:4px">v3.1.0</div>
-
-
-
-    <p class="sdesc" style="margin-bottom:12px">Channel themes, login page with randomised ident backgrounds, C64 default palette.</p>
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px">v3.0.0</div>
-
-
-
-    <p class="sdesc" style="margin-bottom:12px">Channel health monitor, C64 colour palette, versioning &amp; changelog, About scard.</p>
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px">v2.x</div>
-
-
-
-    <p class="sdesc">Media filter bar (title/genre/channel), bulk routing, rules engine, Jellyfin integration, guided tour, login auth.</p>
-
-
-
-  </div>
-
-
-
-
-
-  <div class="sh" style="margin-top:28px">
-
-    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries are logged here persistently</div></div>
-
-    <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
-
-    <button class="btn g sm" onclick="clearHealthLog()">Clear</button>
-
-  </div>
-
-
-
-  <div id="health-log-body"><div class="empty">No health events yet — first check runs 90 seconds after startup.</div></div>
-
-
+  <div id="changelog-body" class="scard" style="margin-top:10px"><div class="loading">Loading&hellip;</div></div>
 
 </div>
 
@@ -5531,10 +5715,6 @@ function toggleArrSrc(src) {
 
 }
 
-let actionLog = [];
-
-
-
 function escHtml(s) {
 
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -6113,15 +6293,25 @@ function toggleTheme() {
 
 // ── Action log
 
-function logAction(msg, ok=true) {
+function logAction(msg, ok=true, meta={}) {
 
-  const now = new Date().toLocaleTimeString();
+  fetch('/api/activity', {
 
-  actionLog.unshift({msg, ok, time: now});
+    method: 'POST',
 
-  if (actionLog.length > 200) actionLog.pop();
+    headers: {'Content-Type':'application/json'},
 
-  renderLog();
+    body: JSON.stringify({msg, ok: ok?1:0, ...meta})
+
+  }).then(() => {
+
+    if (document.getElementById('page-activity')?.classList.contains('on')) {
+
+      loadActivityLog();
+
+    }
+
+  }).catch(()=>{});
 
 }
 
@@ -6243,19 +6433,7 @@ async function clearHealthLog() {
 
 function renderLog() {
 
-  const el = document.getElementById('act-body');
-
-  if (!el) return;
-
-  if (!actionLog.length) { el.innerHTML='<div class="empty">No actions yet this session.</div>'; return; }
-
-  el.innerHTML = '<table><thead><tr><th>Time</th><th>Action</th></tr></thead><tbody>'
-
-    + actionLog.map(e => '<tr><td style="color:var(--muted);white-space:nowrap;font-size:12px">'+e.time+'</td>'
-
-      +'<td style="color:'+(e.ok?'var(--txt)':'var(--acc2)')+'">'+escHtml(e.msg)+'</td></tr>').join('')
-
-    + '</tbody></table>';
+  loadActivityLog();
 
 }
 
@@ -6263,9 +6441,103 @@ function renderLog() {
 
 function clearLog() {
 
-  actionLog = [];
+  fetch('/api/activity', {method:'DELETE'}).then(() => loadActivityLog()).catch(()=>{});
 
-  renderLog();
+}
+
+
+
+async function loadActivityLog() {
+
+  const el = document.getElementById('act-body');
+
+  if (!el) return;
+
+  const q = (document.getElementById('act-search')?.value||'').trim();
+
+  const action_type = document.getElementById('act-type-filter')?.value||'';
+
+  const status = document.getElementById('act-status-filter')?.value||'';
+
+  let url = '/api/activity?limit=500';
+
+  if (q) url += '&q='+encodeURIComponent(q);
+
+  if (action_type) url += '&action_type='+encodeURIComponent(action_type);
+
+  if (status !== '') url += '&ok='+encodeURIComponent(status);
+
+  try {
+
+    const rows = await (await fetch(url)).json();
+
+    if (!rows.length) { el.innerHTML='<div class="empty">No matching log entries.</div>'; return; }
+
+    el.innerHTML = '<table><thead><tr><th>Time</th><th>Action</th><th>Type</th></tr></thead><tbody>'
+
+      + rows.map(r => {
+
+          const ts = new Date(r.ts * 1000).toLocaleString();
+
+          const col = r.ok ? 'var(--txt)' : 'var(--acc2)';
+
+          const tag = r.action_type
+
+            ? '<span style="background:var(--s3);border-radius:4px;padding:2px 6px;font-size:11px">'+escHtml(r.action_type)+'</span>'
+
+            : '';
+
+          return '<tr><td style="color:var(--muted);white-space:nowrap;font-size:12px">'+ts+'</td>'
+
+            +'<td style="color:'+col+'">'+escHtml(r.msg)+'</td>'
+
+            +'<td style="white-space:nowrap">'+tag+'</td></tr>';
+
+        }).join('')
+
+      + '</tbody></table>';
+
+  } catch(e) {
+
+    el.innerHTML = '<div class="empty">Failed to load log: '+escHtml(String(e))+'</div>';
+
+  }
+
+}
+
+
+
+async function loadChangelog() {
+
+  const el = document.getElementById('changelog-body');
+
+  if (!el) return;
+
+  try {
+
+    const d = await (await fetch('/api/changelog')).json();
+
+    if (!d.entries || !d.entries.length) {
+
+      el.innerHTML = '<p class="sdesc">No changelog available.</p>';
+
+      return;
+
+    }
+
+    el.innerHTML = d.entries.map((e, i) =>
+
+      '<div style="font-size:12px;font-weight:700;color:'+(i===0?'var(--acc)':'var(--muted)')+';margin-bottom:4px">'+escHtml(e.sha)+'</div>'
+
+      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'12':'0')+'px">'+escHtml(e.message)+'</p>'
+
+    ).join('');
+
+  } catch(e) {
+
+    el.innerHTML = '<p class="sdesc">Could not load changelog.</p>';
+
+  }
 
 }
 
@@ -6285,7 +6557,7 @@ function show(name, btn) {
 
   if (name==='arrivals' && !arrivals.length) loadArrivals();
 
-  if (name==='channels')  loadChannels();
+  if (name==='channels')  { loadChannels(); loadHealthLog(); }
 
   if (name==='rules')     loadRules();
 
@@ -7095,7 +7367,7 @@ async function bulkAddGenre() {
 
     toast('Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'));
 
-    logAction('+ Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'), true);
+    logAction('+ Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'), true, {action_type:'genre'});
 
   }
 
@@ -7249,13 +7521,13 @@ async function saveGenres(rk) {
 
     toast('Genres saved' + (item.targetChannelName ? ' — routes to ' + item.targetChannelName : ''));
 
-    logAction(msg, true);
+    logAction(msg, true, {action_type:'genre', title: item.title, channel: item.targetChannelName||''});
 
   } catch(e) {
 
     toast('Error: '+e.message);
 
-    logAction('Genre save error for "'+item.title+'": '+e.message, false);
+    logAction('Genre save error for "'+item.title+'": '+e.message, false, {action_type:'genre', title: item.title});
 
   }
 
@@ -7343,7 +7615,7 @@ async function routeOne(rk, sid, labels) {
 
       const note = r.method === 'already_present' ? ' (already in channel)' : ' ('+r.count+' added)';
 
-      logAction('✓ "' + (item?.title||rk) + '" → ' + r.channel + note, true);
+      logAction('✓ "' + (item?.title||rk) + '" → ' + r.channel + note, true, {action_type:'route', title: item?.title||rk, channel: r.channel});
 
       toast('Done: '+r.channel+note);
 
@@ -7353,7 +7625,7 @@ async function routeOne(rk, sid, labels) {
 
       const detail = r.debug ? r.error + ' — ' + r.debug : (r.error||'unknown error');
 
-      logAction('✗ Failed "' + (item?.title||rk) + '": ' + detail, false);
+      logAction('✗ Failed "' + (item?.title||rk) + '": ' + detail, false, {action_type:'route', title: item?.title||rk});
 
       toast('Failed: '+r.error);
 
@@ -7363,7 +7635,7 @@ async function routeOne(rk, sid, labels) {
 
     routeStatus[rk] = 'fail';
 
-    logAction('✗ Exception routing "'+(item?.title||rk)+'": '+e.message, false);
+    logAction('✗ Exception routing "'+(item?.title||rk)+'": '+e.message, false, {action_type:'route', title: item?.title||rk});
 
     toast('Error: '+e.message);
 
@@ -7415,7 +7687,7 @@ async function dismissItem(rk) {
 
     if (item) { item.alreadyRouted = true; item.routedTo = 'dismissed'; }
 
-    logAction('Dismissed "' + (item?.title||rk) + '" (marked done without routing)', true);
+    logAction('Dismissed "' + (item?.title||rk) + '" (marked done without routing)', true, {action_type:'route', title: item?.title||rk});
 
     renderArrivals();
 
@@ -7451,7 +7723,7 @@ async function routeAll() {
 
       toast('Error: '+d.error);
 
-      logAction('✗ Route All failed: '+d.error, false);
+      logAction('✗ Route All failed: '+d.error, false, {action_type:'route'});
 
     } else {
 
@@ -7481,13 +7753,13 @@ async function routeAll() {
 
           const note = r.method === 'already_present' ? ' (already in channel)' : ' ('+r.count+' ep, '+r.missed+' missed)';
 
-          logAction('✓ "'+r.title+'" → '+r.channel+note, true);
+          logAction('✓ "'+r.title+'" → '+r.channel+note, true, {action_type:'route', title: r.title, channel: r.channel});
 
         } else {
 
           const detail = r.debug ? r.error+' — '+r.debug : (r.error||'unknown');
 
-          logAction('✗ "'+r.title+'": '+detail, false);
+          logAction('✗ "'+r.title+'": '+detail, false, {action_type:'route', title: r.title});
 
         }
 
@@ -7495,7 +7767,7 @@ async function routeAll() {
 
       const ok = (d.routed??0), total = (d.total??0);
 
-      logAction('Route All complete: '+ok+'/'+total+' succeeded'+(ok<total?' (see above for failures)':''), ok===total);
+      logAction('Route All complete: '+ok+'/'+total+' succeeded'+(ok<total?' (see above for failures)':''), ok===total, {action_type:'route'});
 
       toast('Routed '+ok+'/'+total+' items');
 
@@ -7507,7 +7779,7 @@ async function routeAll() {
 
     toast('Error: '+e.message);
 
-    logAction('✗ Route All exception: '+e.message, false);
+    logAction('✗ Route All exception: '+e.message, false, {action_type:'route'});
 
   }
 
@@ -7985,7 +8257,7 @@ async function runProcess() {
 
       (body.pad_minutes>0?body.pad_minutes+'m padding, ':'')+
 
-      (s.final_content??'?')+' programs', true);
+      (s.final_content??'?')+' programs', true, {action_type:'process', channel: chName});
 
     setTimeout(loadChannels, 2000);
 
@@ -8049,13 +8321,13 @@ async function processAll() {
 
         ok++;
 
-        logAction('Process All: "' + ch.name + '" done (' + ((r.stats || {}).final_content ?? '?') + ' programs)', true);
+        logAction('Process All: "' + ch.name + '" done (' + ((r.stats || {}).final_content ?? '?') + ' programs)', true, {action_type:'process', channel: ch.name});
 
       } else {
 
         fail++;
 
-        logAction('Process All: "' + ch.name + '" failed — ' + r.error, false);
+        logAction('Process All: "' + ch.name + '" failed — ' + r.error, false, {action_type:'process', channel: ch.name});
 
       }
 
@@ -8063,7 +8335,7 @@ async function processAll() {
 
       fail++;
 
-      logAction('Process All: "' + ch.name + '" error — ' + e.message, false);
+      logAction('Process All: "' + ch.name + '" error — ' + e.message, false, {action_type:'process', channel: ch.name});
 
     }
 
@@ -8073,7 +8345,7 @@ async function processAll() {
 
   const msg = 'Process All complete: ' + ok + '/' + allChannels.length + ' succeeded' + (fail ? ', ' + fail + ' failed' : '');
 
-  logAction(msg, fail === 0);
+  logAction(msg, fail === 0, {action_type:'process'});
 
   toast(msg);
 
@@ -8159,7 +8431,7 @@ async function scanNow() {
 
         const s = await (await fetch('/api/scan/status')).json();
 
-        if (!s.scanning) { clearInterval(poll); logAction('Plex scan complete', true); await loadArrivals(true); }
+        if (!s.scanning) { clearInterval(poll); logAction('Plex scan complete', true, {action_type:'scan'}); await loadArrivals(true); }
 
       } catch { clearInterval(poll); }
 
@@ -9249,7 +9521,7 @@ async function saveRule() {
 
     loadRules();
 
-    logAction('Rule updated: '+rule.name, true);
+    logAction('Rule updated: '+rule.name, true, {action_type:'rule'});
 
     toast('Rule updated');
 
@@ -9261,7 +9533,7 @@ async function saveRule() {
 
     loadRules();
 
-    logAction('Rule added: '+rule.name, true);
+    logAction('Rule added: '+rule.name, true, {action_type:'rule'});
 
     toast('Rule added');
 
