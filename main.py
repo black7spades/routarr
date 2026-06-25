@@ -8516,7 +8516,13 @@ async function updateActionBar() {
 
     }
 
-    allChannels.forEach(c => { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; sel.appendChild(o); });
+    if (!_fillerLists.length) {
+
+      try { const d = await (await fetch('/api/filler-lists')).json(); if (Array.isArray(d)) _fillerLists = d; } catch {}
+
+    }
+
+    sel.innerHTML = '<option value="">— clear —</option>' + _chanOpts();
 
   }
 
@@ -8540,7 +8546,7 @@ async function bulkRouteChecked() {
 
   const channelId = sel.value;
 
-  const channelName = sel.options[sel.selectedIndex].textContent;
+  const channelName = sel.options[sel.selectedIndex].dataset.name || sel.options[sel.selectedIndex].textContent;
 
   const rks = Array.from(checkedItems);
 
