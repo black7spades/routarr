@@ -4213,6 +4213,90 @@ async def _get_filler_lists(client) -> list:
 
 
 
+@app.get("/api/debug/tunarr-filler-probe")
+
+async def debug_tunarr_filler_probe():
+
+    """Try every plausible write method for a filler list and report results."""
+
+    tunarr = cfg("tunarr_url")
+
+    if not tunarr:
+
+        return {"error": "tunarr_url not configured"}
+
+    results = {}
+
+    try:
+
+        async with httpx.AsyncClient(timeout=10) as c:
+
+            # 1. GET /api/filler-lists to find a real filler list ID
+
+            r0 = await c.get(f"{tunarr}/api/filler-lists")
+
+            results["GET /api/filler-lists"] = r0.status_code
+
+            lists = r0.json() if r0.status_code == 200 else []
+
+            fid = lists[0]["id"] if lists else "NONE"
+
+            results["first_filler_id"] = fid
+
+            if fid == "NONE":
+
+                return results
+
+            dummy = []
+
+            # 2. Probe GET /content
+
+            r = await c.get(f"{tunarr}/api/filler-lists/{fid}/content",
+
+                            params={"offset": 0, "limit": 1})
+
+            results["GET /content"] = r.status_code
+
+            if r.status_code == 200:
+
+                results["GET /content body keys"] = list((r.json() if isinstance(r.json(), dict) else {}).keys())
+
+            # 3. Probe write candidates (send empty body, expect non-404)
+
+            candidates = [
+
+                ("POST",  f"/api/filler-lists/{fid}/programming"),
+
+                ("POST",  f"/api/filler-lists/{fid}/programs"),
+
+                ("PUT",   f"/api/filler-lists/{fid}/programs"),
+
+                ("PATCH", f"/api/filler-lists/{fid}/content"),
+
+                ("POST",  f"/api/filler-lists/{fid}/content"),
+
+                ("PUT",   f"/api/filler-lists/{fid}/content"),
+
+                ("PUT",   f"/api/filler-lists/{fid}"),
+
+            ]
+
+            for method, path in candidates:
+
+                req = getattr(c, method.lower())
+
+                r = await req(f"{tunarr}{path}", json=dummy)
+
+                results[f"{method} {path}"] = r.status_code
+
+    except Exception as e:
+
+        results["error"] = str(e)
+
+    return results
+
+
+
 @app.get("/api/filler-lists")
 
 async def get_filler_lists():
