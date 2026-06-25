@@ -538,6 +538,22 @@ def migrate_db():
 
             pass  # already exists
 
+        try:
+
+            db.execute("ALTER TABLE routing_rules ADD COLUMN title_filter TEXT DEFAULT ''")
+
+        except Exception:
+
+            pass  # already exists
+
+        try:
+
+            db.execute("ALTER TABLE routing_rules ADD COLUMN title_excl TEXT DEFAULT ''")
+
+        except Exception:
+
+            pass  # already exists
+
 migrate_db()
 
 
@@ -742,7 +758,9 @@ def get_routed_items() -> dict:
 
 
 
-def resolve_channel(section_id: str, labels: list[str]) -> Optional[tuple[str, str]]:
+def resolve_channel(section_id: str, labels: list[str], title: str = "") -> Optional[tuple[str, str]]:
+
+    _title_lc = title.lower()
 
     for rule in routing_rules():
 
@@ -768,15 +786,29 @@ def resolve_channel(section_id: str, labels: list[str]) -> Optional[tuple[str, s
 
             continue
 
+        tf = rule.get("title_filter", "").strip()
+
+        if tf and _title_lc and tf.lower() not in _title_lc:
+
+            continue
+
+        te = rule.get("title_excl", "").strip()
+
+        if te and _title_lc and te.lower() in _title_lc:
+
+            continue
+
         return rule["channel_id"], rule["channel_name"]
 
     return None
 
 
 
-def resolve_channel_full(section_id: str, labels: list) -> Optional[tuple]:
+def resolve_channel_full(section_id: str, labels: list, title: str = "") -> Optional[tuple]:
 
     """Like resolve_channel but also returns matched rule id."""
+
+    _title_lc = title.lower()
 
     for rule in routing_rules():
 
@@ -795,6 +827,18 @@ def resolve_channel_full(section_id: str, labels: list) -> Optional[tuple]:
         excl = [g.strip() for g in rule.get("label_excl", "").split(",") if g.strip()]
 
         if excl and any(g in labels for g in excl):
+
+            continue
+
+        tf = rule.get("title_filter", "").strip()
+
+        if tf and _title_lc and tf.lower() not in _title_lc:
+
+            continue
+
+        te = rule.get("title_excl", "").strip()
+
+        if te and _title_lc and te.lower() in _title_lc:
 
             continue
 
@@ -1059,7 +1103,7 @@ async def plex_new_content(client, days=14):
 
             added_at = int(attrs.get("addedAt", 0))
 
-            resolved = resolve_channel(sec_id, genres)
+            resolved = resolve_channel(sec_id, genres, title=attrs.get("title", ""))
 
             rk_str   = attrs["ratingKey"]
 
@@ -1367,7 +1411,7 @@ async def jellyfin_new_content(client, days: int = 14) -> list:
 
             labels   = list(dict.fromkeys(item.get("Tags", []) + item.get("Genres", [])))
 
-            resolved = resolve_channel(section_id, labels)
+            resolved = resolve_channel(section_id, labels, title=item.get("Name", ""))
 
             rk_str   = f"jf:{jf_id}"
 
@@ -1817,7 +1861,7 @@ async def _channel_existing_ids(client, channel_id: str) -> set:
 
 
 
-async def route_item(client, rk, section_id, labels, override_channel_id=None):
+async def route_item(client, rk, section_id, labels, override_channel_id=None, title=""):
 
     if override_channel_id:
 
@@ -1839,7 +1883,7 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
     else:
 
-        resolved = resolve_channel(section_id, labels)
+        resolved = resolve_channel(section_id, labels, title=title)
 
     if not resolved:
 
@@ -1983,7 +2027,7 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
 
 
-async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, override_channel_id=None) -> dict:
+async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, override_channel_id=None, title="") -> dict:
 
     """Route a Jellyfin item (rk='jf:{jellyfin_item_id}') to a Tunarr channel."""
 
@@ -2009,7 +2053,7 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     else:
 
-        resolved = resolve_channel(section_id, labels)
+        resolved = resolve_channel(section_id, labels, title=title)
 
     if not resolved:
 
@@ -2443,11 +2487,11 @@ async def _run_scan_once():
 
                         if _item.get("source") == "jellyfin":
 
-                            _r = await route_jellyfin_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
+                            _r = await route_jellyfin_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []), title=_item.get("title", ""))
 
                         else:
 
-                            _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
+                            _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []), title=_item.get("title", ""))
 
                         if _r.get("success"):
 
@@ -3788,15 +3832,17 @@ async def add_routing(request: Request):
 
         db.execute(
 
-            "INSERT INTO routing_rules(name,section_id,label,channel_id,channel_name,priority,source,label_excl)"
+            "INSERT INTO routing_rules(name,section_id,label,channel_id,channel_name,priority,source,label_excl,title_filter,title_excl)"
 
-            " VALUES(?,?,?,?,?,?,?,?)",
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
 
             (rule.get("name",""), rule["section_id"], rule.get("label",""),
 
              rule["channel_id"], rule.get("channel_name",""), rule.get("priority",0),
 
-             rule.get("source","plex"), rule.get("label_excl",""))
+             rule.get("source","plex"), rule.get("label_excl",""),
+
+             rule.get("title_filter",""), rule.get("title_excl",""))
 
         )
 
@@ -3818,7 +3864,7 @@ async def update_routing(rule_id: int, request: Request):
 
     with db_conn() as db:
 
-        allowed = ["name", "section_id", "label", "channel_id", "channel_name", "priority", "source", "label_excl"]
+        allowed = ["name", "section_id", "label", "channel_id", "channel_name", "priority", "source", "label_excl", "title_filter", "title_excl"]
 
         fields = [f for f in allowed if f in body]
 
@@ -3945,7 +3991,7 @@ async def export_routing():
 
         rows = db.execute(
 
-            "SELECT name, section_id, label, label_excl, channel_id, channel_name, priority, source"
+            "SELECT name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source"
 
             " FROM routing_rules ORDER BY priority DESC, id"
 
@@ -4035,9 +4081,9 @@ async def import_routing(request: Request, mode: str = "merge"):
 
             db.execute(
 
-                "INSERT INTO routing_rules (name, section_id, label, label_excl, channel_id, channel_name, priority, source)"
+                "INSERT INTO routing_rules (name, section_id, label, label_excl, title_filter, title_excl, channel_id, channel_name, priority, source)"
 
-                " VALUES (?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
 
                 (
 
@@ -4048,6 +4094,10 @@ async def import_routing(request: Request, mode: str = "merge"):
                     rule.get("label", ""),
 
                     rule.get("label_excl", ""),
+
+                    rule.get("title_filter", ""),
+
+                    rule.get("title_excl", ""),
 
                     rule.get("channel_id", ""),
 
@@ -4534,7 +4584,7 @@ async def route_auto(request: Request, days: int = 14):
 
             for item in pending:
 
-                r = await route_item(c, item["ratingKey"], item["sectionId"], item["labels"])
+                r = await route_item(c, item["ratingKey"], item["sectionId"], item["labels"], title=item.get("title", ""))
 
                 results.append({"title": item["title"], "rk": item["ratingKey"], **r})
 
@@ -4560,7 +4610,7 @@ async def route_auto(request: Request, days: int = 14):
 
 @app.post("/api/route/{rk}")
 
-async def route_one(rk: str, section_id: str, labels: str = "", channel_id: str = ""):
+async def route_one(rk: str, section_id: str, labels: str = "", channel_id: str = "", title: str = ""):
 
     try:
 
@@ -4572,9 +4622,9 @@ async def route_one(rk: str, section_id: str, labels: str = "", channel_id: str 
 
             if rk.startswith("jf:"):
 
-                return await route_jellyfin_item(c, rk, section_id, label_list, override_channel_id=ov)
+                return await route_jellyfin_item(c, rk, section_id, label_list, override_channel_id=ov, title=title)
 
-            return await route_item(c, rk, section_id, label_list, override_channel_id=ov)
+            return await route_item(c, rk, section_id, label_list, override_channel_id=ov, title=title)
 
     except Exception as e:
 
@@ -4962,11 +5012,11 @@ async def route_now(request: Request, days: int = 14):
 
                 if item.get("source") == "jellyfin":
 
-                    r = await route_jellyfin_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+                    r = await route_jellyfin_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []), title=item.get("title", ""))
 
                 else:
 
-                    r = await route_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+                    r = await route_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []), title=item.get("title", ""))
 
                 results.append({"title": item["title"], **r})
 
@@ -5585,7 +5635,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <thead><tr>
 
-        <th style="width:32px;text-align:center"><input type="checkbox" id="rules-chk-all" onchange="toggleAllRules(this)" style="cursor:pointer;accent-color:var(--acc)"></th><th class="th-sort" onclick="sortRules('name')">Rule name <span class="sort-ind" id="si-name"></span></th><th class="th-sort" onclick="sortRules('source')">Source <span class="sort-ind" id="si-source"></span></th><th class="th-sort" onclick="sortRules('section')">Library <span class="sort-ind" id="si-section"></span></th><th>Genres</th><th>Exclude</th>
+        <th style="width:32px;text-align:center"><input type="checkbox" id="rules-chk-all" onchange="toggleAllRules(this)" style="cursor:pointer;accent-color:var(--acc)"></th><th class="th-sort" onclick="sortRules('name')">Rule name <span class="sort-ind" id="si-name"></span></th><th class="th-sort" onclick="sortRules('source')">Source <span class="sort-ind" id="si-source"></span></th><th class="th-sort" onclick="sortRules('section')">Library <span class="sort-ind" id="si-section"></span></th><th>Genres</th><th>Excl. genre</th><th>Title</th><th>Excl. title</th>
 
         <th class="th-sort" onclick="sortRules('channel')">Plays on <span class="sort-ind" id="si-channel"></span></th><th class="th-sort" onclick="sortRules('priority')">Priority <span class="sort-ind" id="si-priority"></span></th><th style="text-align:center;white-space:nowrap">Auto</th><th></th>
 
@@ -6475,6 +6525,22 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
         <input id="r-e3" placeholder="3rd excl." style="flex:1;min-width:0">
 
       </div>
+
+    </div>
+
+    <div class="field" style="margin-bottom:12px">
+
+      <label>Title contains <span style="color:var(--muted);font-weight:400">(include only if title contains this — blank = any)</span></label>
+
+      <input id="r-title-filter" placeholder="e.g. Part 1" style="width:100%">
+
+    </div>
+
+    <div class="field" style="margin-bottom:12px">
+
+      <label>Exclude if title contains <span style="color:var(--muted);font-weight:400">(skip if title matches)</span></label>
+
+      <input id="r-title-excl" placeholder="e.g. Trailer" style="width:100%">
 
     </div>
 
@@ -8749,6 +8815,8 @@ async function routeOne(rk, sid, labels) {
 
     let _rurl = '/api/route/'+rk+'?section_id='+sid+'&labels='+encodeURIComponent(labels);
 
+    if (item?.title) _rurl += '&title='+encodeURIComponent(item.title);
+
     if (_chOv) _rurl += '&channel_id='+encodeURIComponent(_chOv.channel_id);
 
     const r = await (await fetch(_rurl,{method:'POST'})).json();
@@ -10610,6 +10678,10 @@ function _renderRulesTable() {
 
     + '<td>' + (r.label_excl ? r.label_excl.split(',').map(g => '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT ' + g.trim() + '</span>').join('<span style="color:var(--muted);font-size:10px;padding:0 3px">+</span>') : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
 
+    + '<td>' + (r.title_filter ? '<span class="pill" style="background:var(--acc-bg,#2979ff1a);color:var(--acc)">“' + r.title_filter + '”</span>' : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
+
+    + '<td>' + (r.title_excl ? '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT “' + r.title_excl + '”</span>' : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
+
     + '<td style="font-size:13px">' + r.channel_name + '</td>'
 
     + '<td style="text-align:center;color:var(--muted);font-size:13px">' + r.priority + '</td>'
@@ -11038,6 +11110,10 @@ async function openAddRule() {
 
   document.getElementById('r-e3').value = '';
 
+  document.getElementById('r-title-filter').value = '';
+
+  document.getElementById('r-title-excl').value = '';
+
   document.getElementById('modal-title').textContent = 'Add routing rule';
 
   document.getElementById('modal-save-btn').textContent = 'Add rule';
@@ -11121,6 +11197,10 @@ async function openEditRule(id) {
 
   document.getElementById('r-e3').value = excls[2] || '';
 
+  document.getElementById('r-title-filter').value = r.title_filter || '';
+
+  document.getElementById('r-title-excl').value = r.title_excl || '';
+
   document.getElementById('r-priority').value = r.priority || 0;
 
   document.getElementById('modal-title').textContent = 'Edit rule';
@@ -11159,6 +11239,10 @@ async function saveRule() {
 
   const _label_excl = [_e1, _e2, _e3].filter(Boolean).join(',');
 
+  const _title_filter = document.getElementById('r-title-filter').value.trim();
+
+  const _title_excl = document.getElementById('r-title-excl').value.trim();
+
   const _source = document.getElementById('r-source').value;
 
   const _chName = chOpt?.dataset.name || '';
@@ -11180,6 +11264,10 @@ async function saveRule() {
     source:       _source,
 
     label_excl:   _label_excl,
+
+    title_filter: _title_filter,
+
+    title_excl:   _title_excl,
 
   };
 
