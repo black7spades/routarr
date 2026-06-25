@@ -5405,7 +5405,9 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div style="flex:1"></div>
 
-    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="onBulkChannelChange()"><option value="">— clear —</option></select>
+    <select id="arr-bulk-actions" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="onBulkAction(this)"><option value="">Actions…</option><option value="skip">&#8960; Skip (don't route)</option><option value="clear">&#10005; Clear associations</option></select>
+
+    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="onBulkChannelChange()"><option value="">— route to… —</option></select>
 
     <button class="btn p sm" id="arr-bulk-route-btn" onclick="bulkRouteChecked()" disabled>Route to Channel</button>
 
@@ -7281,15 +7283,11 @@ function setHomePage(pg) {
 
 function _chanOpts(selectedId) {
 
-  const skip = '<option value="__skip__"' + ('__skip__' === selectedId ? ' selected' : '') + ' data-name="Skip (don\'t route)">&#8960; Skip (don\'t route)</option>';
-
-  let html = allChannels.map(c =>
+  return allChannels.map(c =>
 
     '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(c.name) + '">CH ' + c.number + ' — ' + escHtml(c.name) + '</option>'
 
   ).join('');
-
-  return skip + html;
 
 }
 
@@ -8011,7 +8009,7 @@ async function updateActionBar() {
 
     }
 
-    sel.innerHTML = '<option value="">— clear —</option>' + _chanOpts();
+    sel.innerHTML = '<option value="">— route to… —</option>' + _chanOpts();
 
   }
 
@@ -8061,23 +8059,61 @@ async function bulkRouteChecked() {
 
 function onBulkChannelChange() {
 
-  const sel = document.getElementById('arr-bulk-channel');
+  updateActionBar();
 
-  if (sel && sel.value === '' && checkedItems.size > 0) {
+}
 
-    const n = checkedItems.size;
 
-    const msg = document.getElementById('clear-confirm-msg');
 
-    if (msg) msg.textContent = 'Remove routing association for ' + n + ' selected item' + (n !== 1 ? 's' : '') + '? They will need to be re-routed manually.';
+function openClearConfirm() {
 
-    document.getElementById('clear-confirm-modal').classList.add('on');
+  const n = checkedItems.size;
 
-  } else {
+  if (!n) return;
 
-    updateActionBar();
+  const msg = document.getElementById('clear-confirm-msg');
+
+  if (msg) msg.textContent = 'Remove routing association for ' + n + ' selected item' + (n !== 1 ? 's' : '') + '? They will need to be re-routed manually.';
+
+  document.getElementById('clear-confirm-modal').classList.add('on');
+
+}
+
+
+
+async function bulkSkipChecked() {
+
+  const rks = Array.from(checkedItems);
+
+  for (const rk of rks) {
+
+    const item = arrivals.find(a => a.ratingKey === rk);
+
+    if (!item) continue;
+
+    _channelOverrides[rk] = {channel_id: '__skip__', channel_name: 'Skip'};
+
+    await routeOne(rk, item.sectionId, item.labels.join(','));
+
+    checkedItems.delete(rk);
 
   }
+
+  updateActionBar();
+
+}
+
+
+
+function onBulkAction(sel) {
+
+  const v = sel.value;
+
+  sel.value = '';
+
+  if (v === 'skip') bulkSkipChecked();
+
+  else if (v === 'clear') openClearConfirm();
 
 }
 
@@ -8086,10 +8122,6 @@ function onBulkChannelChange() {
 function closeClearModal() {
 
   document.getElementById('clear-confirm-modal').classList.remove('on');
-
-  const sel = document.getElementById('arr-bulk-channel');
-
-  if (sel && allChannels.length) sel.value = allChannels[0].id;
 
   updateActionBar();
 
@@ -10697,7 +10729,7 @@ async function openAddRule() {
 
   document.getElementById('r-channel').innerHTML =
 
-    '<option value="">\u2014 pick a channel \u2014</option>' + _chanOpts();
+    '<option value="">\u2014 pick a channel \u2014</option><option value="__skip__">&#8960; Skip (don\'t route)</option>' + _chanOpts();
 
 
 
@@ -10774,7 +10806,7 @@ async function openEditRule(id) {
 
   document.getElementById('r-channel').innerHTML =
 
-    '<option value="">\u2014 pick a channel \u2014</option>' + _chanOpts();
+    '<option value="">\u2014 pick a channel \u2014</option><option value="__skip__">&#8960; Skip (don\'t route)</option>' + _chanOpts();
 
   if (!_libMapSections.length && !_jfSections.length) {
 
