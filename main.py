@@ -2810,7 +2810,23 @@ async def get_versions():
 
                     elif isinstance(data, dict):
 
-                        out["tunarr"] = data.get("version") or data.get("Version")
+                        out["tunarr"] = (
+
+                            data.get("version")
+
+                            or data.get("Version")
+
+                            or data.get("tunarrVersion")
+
+                            or next(
+
+                                (v for k, v in data.items() if "version" in k.lower() and isinstance(v, str) and "." in v),
+
+                                None
+
+                            )
+
+                        )
 
             except Exception:
 
@@ -4255,7 +4271,7 @@ nav{display:flex;gap:2px;flex:1}
 
 .dk.ok{background:var(--green);box-shadow:0 0 5px var(--green)}.dk.err{background:var(--acc2)}
 
-.dk.nc{background:var(--yellow)}.dk.spin{animation:pulse 1.2s ease-in-out infinite}
+.dk.nc{opacity:.3}.dk.spin{background:var(--yellow);animation:pulse 1.2s ease-in-out infinite}
 
 @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
 
@@ -4568,11 +4584,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="status">
 
-      <div class="dot"><div class="dk spin" id="dk-plex"></div>Plex</div>
+      <div class="dot" id="dot-jellyfin"><div class="dk spin" id="dk-jellyfin"></div>Jellyfin</div>
 
-      <div class="dot"><div class="dk spin" id="dk-tunarr"></div>Tunarr</div>
+      <div class="dot" id="dot-plex"><div class="dk spin" id="dk-plex"></div>Plex</div>
 
-      <div class="dot"><div class="dk spin" id="dk-jellyfin"></div>Jellyfin</div>
+      <div class="dot" id="dot-tunarr"><div class="dk spin" id="dk-tunarr"></div>Tunarr</div>
 
     </div>
 
@@ -5120,7 +5136,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <div id="page-settings" class="page">
 
-  <div class="sh"><div><h2>Settings</h2><div class="sub">Everything saved to the app's database — no files to edit</div></div></div>
+  <div class="sh"><div><h2>Settings</h2><div class="sub">Connect Plex, Tunarr, and Jellyfin — configure library mapping, routing behavior, security, and interface preferences</div></div></div>
 
 
 
@@ -6587,6 +6603,16 @@ function toast(msg, ms=3000) {
 
 async function checkHealth() {
 
+  const tips = {
+
+    plex:     'Plex is not responding — check the URL and token in Settings → Connections',
+
+    tunarr:   'Tunarr is not responding — check the URL in Settings → Connections',
+
+    jellyfin: 'Jellyfin is not responding — check the URL in Settings → Connections',
+
+  };
+
   try {
 
     const d = await (await fetch('/api/health')).json();
@@ -6598,6 +6624,10 @@ async function checkHealth() {
       if (!dk) continue;
 
       dk.className = 'dk ' + (st==='ok' ? 'ok' : st==='not_configured' ? 'nc' : 'err');
+
+      const dot = document.getElementById('dot-'+svc);
+
+      if (dot) dot.title = (st==='down' || st==='error') ? (tips[svc] || 'Service is not responding') : '';
 
     }
 
