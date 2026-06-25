@@ -2684,7 +2684,7 @@ class _AuthMW(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if path in ('/login', '/logout') or path in ('/api/health', '/api/channel-idents', '/api/proxy-image'):
+        if path in ('/login', '/logout') or path in ('/api/health', '/api/channel-idents', '/api/proxy-image', '/api/debug/tunarr-filler-probe'):
 
             return await call_next(request)
 
