@@ -1717,9 +1717,17 @@ async def _channel_existing_ids(client, channel_id: str) -> set:
 
     try:
 
-        r = await client.get(f"{tunarr}/api/channels/{channel_id}/programming",
+        if channel_id.startswith("filler:"):
 
-                             params={"offset": 0, "limit": 100000}, timeout=60)
+            r = await client.get(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+
+                                 params={"offset": 0, "limit": 100000}, timeout=60)
+
+        else:
+
+            r = await client.get(f"{tunarr}/api/channels/{channel_id}/programming",
+
+                                 params={"offset": 0, "limit": 100000}, timeout=60)
 
         if r.status_code != 200:
 
@@ -1869,9 +1877,9 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
     if channel_id.startswith("filler:"):
 
-        r = await client.post(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+        r = await client.put(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
 
-                              json={"programs": new_lineup}, timeout=30)
+                             json={"programs": new_lineup}, timeout=30)
 
     else:
 
@@ -2049,9 +2057,9 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     if channel_id.startswith("filler:"):
 
-        r = await client.post(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+        r = await client.put(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
 
-                              json={"programs": new_lineup}, timeout=30)
+                             json={"programs": new_lineup}, timeout=30)
 
     else:
 
