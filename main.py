@@ -21,7 +21,7 @@ Optional env vars (pre-fill empty settings on first start):
 
 """
 
-import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging, urllib.parse
+import os, json, re, time, sqlite3, asyncio, secrets, hashlib, logging, urllib.parse, subprocess
 
 from html import unescape
 
@@ -179,6 +179,28 @@ def init_db():
                 username TEXT NOT NULL,
 
                 expires_at INTEGER NOT NULL
+
+            );
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                ts INTEGER NOT NULL,
+
+                ok INTEGER DEFAULT 1,
+
+                msg TEXT NOT NULL,
+
+                action_type TEXT DEFAULT '',
+
+                source TEXT DEFAULT '',
+
+                library TEXT DEFAULT '',
+
+                channel TEXT DEFAULT '',
+
+                title TEXT DEFAULT ''
 
             );
 
@@ -375,13 +397,9 @@ _LOGIN_CSS = (
 
 
 
-def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
-
-    idents = idents or []
+def _login_page(error: str = '') -> HTMLResponse:
 
     e = '<div class="lerr">' + error + '</div>' if error else ''
-
-    idents_js = '[' + ','.join('"' + u.replace('\\', '\\\\').replace('"', '\\"') + '"' for u in idents) + ']'
 
     html = (
 
@@ -422,26 +440,29 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         '<script>'
 
-        'const _ids=' + idents_js + ';'
-
-        'console.log("[Routarr] login idents:",_ids.length,_ids);'
-
-        '(function(){'
-        'if(!_ids.length){console.warn("[Routarr] no idents — background will be black");return;}'
-        'const _L=[document.getElementById("bg0"),document.getElementById("bg1")];'
-        'let _a=0,_i=Math.floor(Math.random()*_ids.length);'
+        # Ken Burns: fetch idents client-side so the page renders instantly,
+        # then images fade in async (no blocking Tunarr call on page load).
+        '(async function(){'
+        'const L=[document.getElementById("bg0"),document.getElementById("bg1")];'
+        'let a=0,i=0,ids=[];'
         'function _show(li,url){'
-        'const l=_L[li];l.style.backgroundImage="url("+url+")";'
+        'const l=L[li];'
+        'l.style.backgroundImage="url("+url+")";'
         'l.style.animation="none";void l.offsetWidth;l.style.animation="";'
         'l.classList.add("on");}'
         'function _next(){'
-        '_i=(_i+1)%_ids.length;'
-        'const n=1-_a;_show(n,_ids[_i]);_L[_a].classList.remove("on");_a=n;}'
-        '_show(0,_ids[_i]);'
-        'setInterval(_next,8000);'
+        'if(!ids.length)return;'
+        'i=(i+1)%ids.length;'
+        'const n=1-a;_show(n,ids[i]);L[a].classList.remove("on");a=n;}'
+        'try{'
+        'const r=await fetch("/api/channel-idents");'
+        'const data=await r.json();'
+        'ids=data.filter(ch=>ch.ident).map(ch=>"/api/proxy-image?url="+encodeURIComponent(ch.ident));'
+        'if(ids.length){i=Math.floor(Math.random()*ids.length);_show(0,ids[i]);setInterval(_next,8000);}'
+        '}catch(ex){console.warn("[Routarr] ident load failed:",ex);}'
         '})()'
 
-        'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'  
+        'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'
 
         '</script>'
 
@@ -2569,6 +2590,174 @@ async def clear_health_log():
 
 
 
+@app.post("/api/activity")
+
+async def post_activity(request: Request):
+
+    body = await request.json()
+
+    ts = int(time.time())
+
+    ok = 1 if body.get("ok", True) else 0
+
+    msg = str(body.get("msg", ""))[:500]
+
+    action_type = str(body.get("action_type", ""))[:50]
+
+    source = str(body.get("source", ""))[:100]
+
+    library = str(body.get("library", ""))[:100]
+
+    channel = str(body.get("channel", ""))[:100]
+
+    title = str(body.get("title", ""))[:200]
+
+    cutoff = ts - 30 * 86400
+
+    with db_conn() as db:
+
+        db.execute("DELETE FROM activity_log WHERE ts < ?", (cutoff,))
+
+        db.execute(
+
+            "INSERT INTO activity_log(ts,ok,msg,action_type,source,library,channel,title) VALUES(?,?,?,?,?,?,?,?)",
+
+            (ts, ok, msg, action_type, source, library, channel, title)
+
+        )
+
+    return {"ok": True}
+
+
+
+@app.get("/api/activity")
+
+async def get_activity(
+
+    action_type: str = "",
+
+    source: str = "",
+
+    library: str = "",
+
+    channel: str = "",
+
+    q: str = "",
+
+    ok: Optional[str] = None,
+
+    limit: int = 500,
+
+):
+
+    wheres: list = []
+
+    params: list = []
+
+    if action_type:
+
+        wheres.append("action_type = ?")
+
+        params.append(action_type)
+
+    if source:
+
+        wheres.append("source LIKE ?")
+
+        params.append(f"%{source}%")
+
+    if library:
+
+        wheres.append("library LIKE ?")
+
+        params.append(f"%{library}%")
+
+    if channel:
+
+        wheres.append("channel LIKE ?")
+
+        params.append(f"%{channel}%")
+
+    if q:
+
+        wheres.append("(title LIKE ? OR msg LIKE ?)")
+
+        params.extend([f"%{q}%", f"%{q}%"])
+
+    if ok is not None:
+
+        wheres.append("ok = ?")
+
+        params.append(1 if ok == "1" else 0)
+
+    sql = "SELECT * FROM activity_log"
+
+    if wheres:
+
+        sql += " WHERE " + " AND ".join(wheres)
+
+    sql += " ORDER BY ts DESC LIMIT ?"
+
+    params.append(limit)
+
+    with db_conn() as db:
+
+        rows = db.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+
+@app.delete("/api/activity")
+
+async def clear_activity():
+
+    with db_conn() as db:
+
+        db.execute("DELETE FROM activity_log")
+
+    return {"ok": True}
+
+
+
+@app.get("/api/changelog")
+
+async def get_changelog():
+
+    try:
+
+        result = subprocess.run(
+
+            ["git", "log", "--oneline", "-3"],
+
+            capture_output=True,
+
+            text=True,
+
+            timeout=5,
+
+            cwd=str(Path(__file__).parent),
+
+        )
+
+        entries = []
+
+        for line in (result.stdout.strip().split("\n") if result.stdout.strip() else []):
+
+            if " " in line:
+
+                sha, _, message = line.partition(" ")
+
+                entries.append({"sha": sha[:7], "message": message})
+
+        return {"entries": entries}
+
+    except Exception as exc:
+
+        return {"entries": [], "error": str(exc)}
+
+
+
 @app.get("/api/versions")
 
 async def get_versions():
@@ -2681,6 +2870,10 @@ async def get_channel_idents():
 
                         ident = (ch.get("offline") or {}).get("picture", "")
 
+                        if not ident:
+                            icon = ch.get("icon", {})
+                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
+
                         if ident and "ChatGPT" not in ident:
 
                             out.append({"id": ch.get("id"), "name": ch.get("name"), "ident": _tunarr_img(ident, tunarr)})
@@ -2727,52 +2920,7 @@ async def proxy_image(url: str):
 
 async def get_login():
 
-    idents = []
-
-    try:
-
-        tunarr = cfg("tunarr_url")
-
-        if tunarr:
-
-            async with httpx.AsyncClient(timeout=5) as c:
-
-                r = await c.get(f"{tunarr}/api/channels")
-
-                if r.status_code == 200:
-
-                    for ch in r.json():
-
-                        try:
-
-                            num = int(ch.get("number", 0))
-
-                        except Exception:
-
-                            num = 0
-
-                        if num >= 1069 or num in (69, 96, 97):
-
-                            continue
-
-                        ident = (ch.get("offline") or {}).get("picture", "")
-
-                        if not ident:
-                            # Fallback to channel icon when no offline screensaver is set
-                            icon = ch.get("icon", {})
-                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
-
-                        if ident and "ChatGPT" not in ident:
-
-                            ident = _tunarr_img(ident, tunarr)
-
-                            idents.append("/api/proxy-image?url=" + urllib.parse.quote(ident, safe=""))
-
-    except Exception as _ex:
-
-        logger.warning("get_login ident fetch failed: %s", _ex)
-
-    return _login_page(idents=idents)
+    return _login_page()
 
 
 
@@ -4396,7 +4544,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab"     onclick="show('channels',this)">Channels</button>
 
-    <button class="tab"     onclick="show('activity',this);loadHealthLog()">Log</button>
+    <button class="tab"     onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
 
     <button class="tab"     onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
 
@@ -4630,7 +4778,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     </div>
 
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
 
       <button class="btn g sm" onclick="openAddRule()">+ Add rule</button>
 
@@ -4639,6 +4787,32 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <button class="btn g sm" onclick="document.getElementById('import-file').click()">Import rules</button>
 
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importRules(this)">
+
+      <div id="bulk-rule-bar" style="display:none;align-items:center;gap:6px;border-left:1px solid var(--bdr);padding-left:10px;margin-left:2px">
+
+        <span id="bulk-rule-count" style="font-size:12px;color:var(--muted)"></span>
+
+        <select id="bulk-rule-action" onchange="runBulkRuleAction(this)" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;cursor:pointer;outline:none">
+          <option value="">With selected…</option>
+          <option value="delete">&#x1F5D1; Delete</option>
+          <option value="export">&#x2193; Export</option>
+          <option value="channel">&#x21AA; Change channel…</option>
+          <option value="priority">&#x2605; Change priority…</option>
+        </select>
+
+        <div id="bulk-ch-row" style="display:none;align-items:center;gap:6px">
+          <select id="bulk-ch-sel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;outline:none"></select>
+          <button class="btn p sm" onclick="applyBulkChannel()">Apply</button>
+          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
+        </div>
+
+        <div id="bulk-pri-row" style="display:none;align-items:center;gap:6px">
+          <input id="bulk-pri-val" type="number" value="10" min="0" style="width:68px;background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 8px;font-size:12px;outline:none">
+          <button class="btn p sm" onclick="applyBulkPriority()">Apply</button>
+          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
+        </div>
+
+      </div>
 
     </div>
 
@@ -4696,6 +4870,20 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div id="ch-body"><div class="loading">Loading&hellip;</div></div>
 
+
+
+  <div class="sh" style="margin-top:28px">
+
+    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries logged here</div></div>
+
+    <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
+
+    <button class="btn g sm" onclick="clearHealthLog()">Clear</button>
+
+  </div>
+
+  <div id="health-log-body"><div class="empty">No health events yet — first check runs 90 seconds after startup.</div></div>
+
 </div>
 
 
@@ -4706,75 +4894,55 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh">
 
-    <div><h2>Log</h2><div class="sub">Actions taken by Routarr this session — routes, genre edits, channel processing</div></div>
+    <div><h2>Log</h2><div class="sub">Persistent — up to 30 days of routes, genre edits, channel processing</div></div>
 
     <button class="btn g sm" onclick="clearLog()">Clear</button>
 
   </div>
 
-  <div id="act-body"><div class="empty">No actions yet this session.</div></div>
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+
+    <input id="act-search" placeholder="Search&hellip;" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px;outline:none;width:200px" oninput="loadActivityLog()">
+
+    <select id="act-type-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="loadActivityLog()">
+
+      <option value="">All actions</option>
+
+      <option value="route">Route</option>
+
+      <option value="genre">Genre</option>
+
+      <option value="rule">Rule</option>
+
+      <option value="process">Process</option>
+
+      <option value="scan">Scan</option>
+
+    </select>
+
+    <select id="act-status-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="loadActivityLog()">
+
+      <option value="">All results</option>
+
+      <option value="1">Success only</option>
+
+      <option value="0">Failures only</option>
+
+    </select>
+
+  </div>
+
+  <div id="act-body"><div class="empty">No log entries yet.</div></div>
 
 
 
   <div class="sh" style="margin-top:28px">
 
-    <div><h3 style="margin:0">Changelog</h3><div class="sub">Version history</div></div>
-
-
+    <div><h3 style="margin:0">Changelog</h3><div class="sub">Recent commits</div></div>
 
   </div>
 
-
-
-  <div class="scard" style="margin-top:10px">
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--acc);margin-bottom:4px">v3.1.0</div>
-
-
-
-    <p class="sdesc" style="margin-bottom:12px">Channel themes, login page with randomised ident backgrounds, C64 default palette.</p>
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px">v3.0.0</div>
-
-
-
-    <p class="sdesc" style="margin-bottom:12px">Channel health monitor, C64 colour palette, versioning &amp; changelog, About scard.</p>
-
-
-
-    <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px">v2.x</div>
-
-
-
-    <p class="sdesc">Media filter bar (title/genre/channel), bulk routing, rules engine, Jellyfin integration, guided tour, login auth.</p>
-
-
-
-  </div>
-
-
-
-
-
-  <div class="sh" style="margin-top:28px">
-
-    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries are logged here persistently</div></div>
-
-    <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
-
-    <button class="btn g sm" onclick="clearHealthLog()">Clear</button>
-
-  </div>
-
-
-
-  <div id="health-log-body"><div class="empty">No health events yet — first check runs 90 seconds after startup.</div></div>
-
-
+  <div id="changelog-body" class="scard" style="margin-top:10px"><div class="loading">Loading&hellip;</div></div>
 
 </div>
 
@@ -5317,7 +5485,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="mbox">
 
-    <h3>Add routing rule</h3>
+    <h3 id="modal-title">Add routing rule</h3>
+
+    <div style="font-size:12px;color:var(--muted);background:var(--s2);border-radius:5px;padding:6px 10px;margin-bottom:14px;border:1px solid var(--bdr)">
+      <span style="opacity:.55">Rule name: </span><span id="r-name-preview" style="font-weight:500">—</span>
+    </div>
 
     <div class="fg" style="margin-bottom:12px">
 
@@ -5325,7 +5497,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <label>Source</label>
 
-        <select id="r-source" onchange="updateRuleSections()">
+        <select id="r-source" onchange="updateRuleSections();updateRuleName()">
 
           <option value="plex">Plex</option>
 
@@ -5339,7 +5511,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <label>Library</label>
 
-        <select id="r-section"><option value="">Loading…</option></select>
+        <select id="r-section" onchange="updateRuleName()"><option value="">Loading…</option></select>
 
       </div>
 
@@ -5351,11 +5523,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div style="display:flex;gap:6px">
 
-        <input id="r-g1" placeholder="e.g. Animation" style="flex:1;min-width:0">
+        <input id="r-g1" placeholder="e.g. Animation" style="flex:1;min-width:0" oninput="updateRuleName()">
 
-        <input id="r-g2" placeholder="2nd genre" style="flex:1;min-width:0">
+        <input id="r-g2" placeholder="2nd genre" style="flex:1;min-width:0" oninput="updateRuleName()">
 
-        <input id="r-g3" placeholder="3rd genre" style="flex:1;min-width:0">
+        <input id="r-g3" placeholder="3rd genre" style="flex:1;min-width:0" oninput="updateRuleName()">
 
       </div>
 
@@ -5381,7 +5553,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <label>Send to channel</label>
 
-      <select id="r-channel"><option value="">Loading…</option></select>
+      <select id="r-channel" onchange="updateRuleName()"><option value="">Loading…</option></select>
 
     </div>
 
@@ -5397,7 +5569,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <button class="btn g" onclick="closeModal()">Cancel</button>
 
-      <button class="btn p" onclick="saveRule()">Add rule</button>
+      <button class="btn p" id="modal-save-btn" onclick="saveRule()">Add rule</button>
 
     </div>
 
@@ -5542,10 +5714,6 @@ function toggleArrSrc(src) {
   renderArrivals();
 
 }
-
-let actionLog = [];
-
-
 
 function escHtml(s) {
 
@@ -6125,15 +6293,25 @@ function toggleTheme() {
 
 // ── Action log
 
-function logAction(msg, ok=true) {
+function logAction(msg, ok=true, meta={}) {
 
-  const now = new Date().toLocaleTimeString();
+  fetch('/api/activity', {
 
-  actionLog.unshift({msg, ok, time: now});
+    method: 'POST',
 
-  if (actionLog.length > 200) actionLog.pop();
+    headers: {'Content-Type':'application/json'},
 
-  renderLog();
+    body: JSON.stringify({msg, ok: ok?1:0, ...meta})
+
+  }).then(() => {
+
+    if (document.getElementById('page-activity')?.classList.contains('on')) {
+
+      loadActivityLog();
+
+    }
+
+  }).catch(()=>{});
 
 }
 
@@ -6255,19 +6433,7 @@ async function clearHealthLog() {
 
 function renderLog() {
 
-  const el = document.getElementById('act-body');
-
-  if (!el) return;
-
-  if (!actionLog.length) { el.innerHTML='<div class="empty">No actions yet this session.</div>'; return; }
-
-  el.innerHTML = '<table><thead><tr><th>Time</th><th>Action</th></tr></thead><tbody>'
-
-    + actionLog.map(e => '<tr><td style="color:var(--muted);white-space:nowrap;font-size:12px">'+e.time+'</td>'
-
-      +'<td style="color:'+(e.ok?'var(--txt)':'var(--acc2)')+'">'+escHtml(e.msg)+'</td></tr>').join('')
-
-    + '</tbody></table>';
+  loadActivityLog();
 
 }
 
@@ -6275,9 +6441,103 @@ function renderLog() {
 
 function clearLog() {
 
-  actionLog = [];
+  fetch('/api/activity', {method:'DELETE'}).then(() => loadActivityLog()).catch(()=>{});
 
-  renderLog();
+}
+
+
+
+async function loadActivityLog() {
+
+  const el = document.getElementById('act-body');
+
+  if (!el) return;
+
+  const q = (document.getElementById('act-search')?.value||'').trim();
+
+  const action_type = document.getElementById('act-type-filter')?.value||'';
+
+  const status = document.getElementById('act-status-filter')?.value||'';
+
+  let url = '/api/activity?limit=500';
+
+  if (q) url += '&q='+encodeURIComponent(q);
+
+  if (action_type) url += '&action_type='+encodeURIComponent(action_type);
+
+  if (status !== '') url += '&ok='+encodeURIComponent(status);
+
+  try {
+
+    const rows = await (await fetch(url)).json();
+
+    if (!rows.length) { el.innerHTML='<div class="empty">No matching log entries.</div>'; return; }
+
+    el.innerHTML = '<table><thead><tr><th>Time</th><th>Action</th><th>Type</th></tr></thead><tbody>'
+
+      + rows.map(r => {
+
+          const ts = new Date(r.ts * 1000).toLocaleString();
+
+          const col = r.ok ? 'var(--txt)' : 'var(--acc2)';
+
+          const tag = r.action_type
+
+            ? '<span style="background:var(--s3);border-radius:4px;padding:2px 6px;font-size:11px">'+escHtml(r.action_type)+'</span>'
+
+            : '';
+
+          return '<tr><td style="color:var(--muted);white-space:nowrap;font-size:12px">'+ts+'</td>'
+
+            +'<td style="color:'+col+'">'+escHtml(r.msg)+'</td>'
+
+            +'<td style="white-space:nowrap">'+tag+'</td></tr>';
+
+        }).join('')
+
+      + '</tbody></table>';
+
+  } catch(e) {
+
+    el.innerHTML = '<div class="empty">Failed to load log: '+escHtml(String(e))+'</div>';
+
+  }
+
+}
+
+
+
+async function loadChangelog() {
+
+  const el = document.getElementById('changelog-body');
+
+  if (!el) return;
+
+  try {
+
+    const d = await (await fetch('/api/changelog')).json();
+
+    if (!d.entries || !d.entries.length) {
+
+      el.innerHTML = '<p class="sdesc">No changelog available.</p>';
+
+      return;
+
+    }
+
+    el.innerHTML = d.entries.map((e, i) =>
+
+      '<div style="font-size:12px;font-weight:700;color:'+(i===0?'var(--acc)':'var(--muted)')+';margin-bottom:4px">'+escHtml(e.sha)+'</div>'
+
+      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'12':'0')+'px">'+escHtml(e.message)+'</p>'
+
+    ).join('');
+
+  } catch(e) {
+
+    el.innerHTML = '<p class="sdesc">Could not load changelog.</p>';
+
+  }
 
 }
 
@@ -6297,7 +6557,7 @@ function show(name, btn) {
 
   if (name==='arrivals' && !arrivals.length) loadArrivals();
 
-  if (name==='channels')  loadChannels();
+  if (name==='channels')  { loadChannels(); loadHealthLog(); }
 
   if (name==='rules')     loadRules();
 
@@ -7107,7 +7367,7 @@ async function bulkAddGenre() {
 
     toast('Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'));
 
-    logAction('+ Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'), true);
+    logAction('+ Genre \''+genre+'\' added to '+changed+' item'+(changed===1?'':'s'), true, {action_type:'genre'});
 
   }
 
@@ -7261,13 +7521,13 @@ async function saveGenres(rk) {
 
     toast('Genres saved' + (item.targetChannelName ? ' — routes to ' + item.targetChannelName : ''));
 
-    logAction(msg, true);
+    logAction(msg, true, {action_type:'genre', title: item.title, channel: item.targetChannelName||''});
 
   } catch(e) {
 
     toast('Error: '+e.message);
 
-    logAction('Genre save error for "'+item.title+'": '+e.message, false);
+    logAction('Genre save error for "'+item.title+'": '+e.message, false, {action_type:'genre', title: item.title});
 
   }
 
@@ -7355,7 +7615,7 @@ async function routeOne(rk, sid, labels) {
 
       const note = r.method === 'already_present' ? ' (already in channel)' : ' ('+r.count+' added)';
 
-      logAction('✓ "' + (item?.title||rk) + '" → ' + r.channel + note, true);
+      logAction('✓ "' + (item?.title||rk) + '" → ' + r.channel + note, true, {action_type:'route', title: item?.title||rk, channel: r.channel});
 
       toast('Done: '+r.channel+note);
 
@@ -7365,7 +7625,7 @@ async function routeOne(rk, sid, labels) {
 
       const detail = r.debug ? r.error + ' — ' + r.debug : (r.error||'unknown error');
 
-      logAction('✗ Failed "' + (item?.title||rk) + '": ' + detail, false);
+      logAction('✗ Failed "' + (item?.title||rk) + '": ' + detail, false, {action_type:'route', title: item?.title||rk});
 
       toast('Failed: '+r.error);
 
@@ -7375,7 +7635,7 @@ async function routeOne(rk, sid, labels) {
 
     routeStatus[rk] = 'fail';
 
-    logAction('✗ Exception routing "'+(item?.title||rk)+'": '+e.message, false);
+    logAction('✗ Exception routing "'+(item?.title||rk)+'": '+e.message, false, {action_type:'route', title: item?.title||rk});
 
     toast('Error: '+e.message);
 
@@ -7427,7 +7687,7 @@ async function dismissItem(rk) {
 
     if (item) { item.alreadyRouted = true; item.routedTo = 'dismissed'; }
 
-    logAction('Dismissed "' + (item?.title||rk) + '" (marked done without routing)', true);
+    logAction('Dismissed "' + (item?.title||rk) + '" (marked done without routing)', true, {action_type:'route', title: item?.title||rk});
 
     renderArrivals();
 
@@ -7463,7 +7723,7 @@ async function routeAll() {
 
       toast('Error: '+d.error);
 
-      logAction('✗ Route All failed: '+d.error, false);
+      logAction('✗ Route All failed: '+d.error, false, {action_type:'route'});
 
     } else {
 
@@ -7493,13 +7753,13 @@ async function routeAll() {
 
           const note = r.method === 'already_present' ? ' (already in channel)' : ' ('+r.count+' ep, '+r.missed+' missed)';
 
-          logAction('✓ "'+r.title+'" → '+r.channel+note, true);
+          logAction('✓ "'+r.title+'" → '+r.channel+note, true, {action_type:'route', title: r.title, channel: r.channel});
 
         } else {
 
           const detail = r.debug ? r.error+' — '+r.debug : (r.error||'unknown');
 
-          logAction('✗ "'+r.title+'": '+detail, false);
+          logAction('✗ "'+r.title+'": '+detail, false, {action_type:'route', title: r.title});
 
         }
 
@@ -7507,7 +7767,7 @@ async function routeAll() {
 
       const ok = (d.routed??0), total = (d.total??0);
 
-      logAction('Route All complete: '+ok+'/'+total+' succeeded'+(ok<total?' (see above for failures)':''), ok===total);
+      logAction('Route All complete: '+ok+'/'+total+' succeeded'+(ok<total?' (see above for failures)':''), ok===total, {action_type:'route'});
 
       toast('Routed '+ok+'/'+total+' items');
 
@@ -7519,7 +7779,7 @@ async function routeAll() {
 
     toast('Error: '+e.message);
 
-    logAction('✗ Route All exception: '+e.message, false);
+    logAction('✗ Route All exception: '+e.message, false, {action_type:'route'});
 
   }
 
@@ -7997,7 +8257,7 @@ async function runProcess() {
 
       (body.pad_minutes>0?body.pad_minutes+'m padding, ':'')+
 
-      (s.final_content??'?')+' programs', true);
+      (s.final_content??'?')+' programs', true, {action_type:'process', channel: chName});
 
     setTimeout(loadChannels, 2000);
 
@@ -8061,13 +8321,13 @@ async function processAll() {
 
         ok++;
 
-        logAction('Process All: "' + ch.name + '" done (' + ((r.stats || {}).final_content ?? '?') + ' programs)', true);
+        logAction('Process All: "' + ch.name + '" done (' + ((r.stats || {}).final_content ?? '?') + ' programs)', true, {action_type:'process', channel: ch.name});
 
       } else {
 
         fail++;
 
-        logAction('Process All: "' + ch.name + '" failed — ' + r.error, false);
+        logAction('Process All: "' + ch.name + '" failed — ' + r.error, false, {action_type:'process', channel: ch.name});
 
       }
 
@@ -8075,7 +8335,7 @@ async function processAll() {
 
       fail++;
 
-      logAction('Process All: "' + ch.name + '" error — ' + e.message, false);
+      logAction('Process All: "' + ch.name + '" error — ' + e.message, false, {action_type:'process', channel: ch.name});
 
     }
 
@@ -8085,7 +8345,7 @@ async function processAll() {
 
   const msg = 'Process All complete: ' + ok + '/' + allChannels.length + ' succeeded' + (fail ? ', ' + fail + ' failed' : '');
 
-  logAction(msg, fail === 0);
+  logAction(msg, fail === 0, {action_type:'process'});
 
   toast(msg);
 
@@ -8171,7 +8431,7 @@ async function scanNow() {
 
         const s = await (await fetch('/api/scan/status')).json();
 
-        if (!s.scanning) { clearInterval(poll); logAction('Plex scan complete', true); await loadArrivals(true); }
+        if (!s.scanning) { clearInterval(poll); logAction('Plex scan complete', true, {action_type:'scan'}); await loadArrivals(true); }
 
       } catch { clearInterval(poll); }
 
@@ -8750,6 +9010,8 @@ function toggleAllRules(chk) {
 
   });
 
+  _updateBulkBar();
+
 }
 
 function _ruleChkChange(chk) {
@@ -8757,6 +9019,8 @@ function _ruleChkChange(chk) {
   const id = parseInt(chk.dataset.id);
 
   if (chk.checked) _rulesSelected.add(id); else _rulesSelected.delete(id);
+
+  _updateBulkBar();
 
   const allChk = document.getElementById('rules-chk-all');
 
@@ -8817,6 +9081,210 @@ function setRulesPage(d) {
   _rulesPage = Math.max(1, _rulesPage + d);
 
   _renderRulesTable();
+
+}
+
+// ── Bulk rule actions ─────────────────────────────────────────────────────────
+
+function _updateBulkBar() {
+
+  const n = _rulesSelected.size;
+
+  const bar = document.getElementById('bulk-rule-bar');
+
+  if (!bar) return;
+
+  if (n === 0) {
+
+    bar.style.display = 'none';
+
+    _cancelBulkSub();
+
+    return;
+
+  }
+
+  bar.style.display = 'flex';
+
+  const lbl = document.getElementById('bulk-rule-count');
+
+  if (lbl) lbl.textContent = n + ' selected';
+
+}
+
+function runBulkRuleAction(sel) {
+
+  const action = sel.value;
+
+  sel.value = '';
+
+  _cancelBulkSub();
+
+  if (action === 'delete') {
+
+    bulkDeleteRules();
+
+  } else if (action === 'export') {
+
+    exportSelectedRules();
+
+  } else if (action === 'channel') {
+
+    const row = document.getElementById('bulk-ch-row');
+
+    if (row) {
+
+      const chSel = document.getElementById('bulk-ch-sel');
+
+      chSel.innerHTML = allChannels.map(c => '<option value="'+c.id+'" data-name="'+c.name+'">CH '+c.number+' — '+c.name+'</option>').join('');
+
+      row.style.display = 'flex';
+
+    }
+
+  } else if (action === 'priority') {
+
+    const row = document.getElementById('bulk-pri-row');
+
+    if (row) row.style.display = 'flex';
+
+  }
+
+}
+
+function _cancelBulkSub() {
+
+  const cr = document.getElementById('bulk-ch-row');
+
+  const pr = document.getElementById('bulk-pri-row');
+
+  if (cr) cr.style.display = 'none';
+
+  if (pr) pr.style.display = 'none';
+
+}
+
+async function bulkDeleteRules() {
+
+  const ids = [..._rulesSelected];
+
+  if (!ids.length) return;
+
+  if (!confirm('Delete ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + '?')) return;
+
+  await Promise.all(ids.map(id => fetch('/api/routing/' + id, {method: 'DELETE'})));
+
+  _rulesSelected.clear();
+
+  toast('Deleted ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+function exportSelectedRules() {
+
+  const ids = new Set(_rulesSelected);
+
+  const subset = _rulesCache.filter(r => ids.has(r.id));
+
+  const payload = {version: 1, exported_at: new Date().toISOString(), rules: subset};
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+
+  const a = document.createElement('a');
+
+  a.href = URL.createObjectURL(blob);
+
+  a.download = 'routarr-rules-selected.json';
+
+  a.click();
+
+}
+
+async function applyBulkChannel() {
+
+  const chSel = document.getElementById('bulk-ch-sel');
+
+  const chId = chSel.value;
+
+  const chName = chSel.options[chSel.selectedIndex]?.dataset.name || '';
+
+  if (!chId) return;
+
+  const ids = [..._rulesSelected];
+
+  await Promise.all(ids.map(id => {
+
+    const r = _rulesCache.find(x => x.id === id);
+
+    if (!r) return;
+
+    const updated = {...r, channel_id: chId, channel_name: chName,
+
+      name: makeRuleName(r.section_id, r.label, chName)};
+
+    return fetch('/api/routing/' + id, {method: 'PUT', headers: {'Content-Type':'application/json'},
+
+      body: JSON.stringify(updated)});
+
+  }));
+
+  _cancelBulkSub();
+
+  toast('Updated channel for ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+async function applyBulkPriority() {
+
+  const val = parseInt(document.getElementById('bulk-pri-val').value) || 0;
+
+  const ids = [..._rulesSelected];
+
+  await Promise.all(ids.map(id => {
+
+    const r = _rulesCache.find(x => x.id === id);
+
+    if (!r) return;
+
+    return fetch('/api/routing/' + id, {method: 'PUT', headers: {'Content-Type':'application/json'},
+
+      body: JSON.stringify({...r, priority: val})});
+
+  }));
+
+  _cancelBulkSub();
+
+  toast('Set priority ' + val + ' on ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+// ── Rule name live preview ────────────────────────────────────────────────────
+
+function updateRuleName() {
+
+  const chSel = document.getElementById('r-channel');
+
+  const chName = chSel?.options[chSel.selectedIndex]?.dataset.name || '';
+
+  const secVal = document.getElementById('r-section')?.value || '';
+
+  const g1 = document.getElementById('r-g1')?.value.trim() || '';
+
+  const g2 = document.getElementById('r-g2')?.value.trim() || '';
+
+  const g3 = document.getElementById('r-g3')?.value.trim() || '';
+
+  const label = [g1, g2, g3].filter(Boolean).join(',');
+
+  const preview = document.getElementById('r-name-preview');
+
+  if (preview) preview.textContent = makeRuleName(secVal, label, chName) || '—';
 
 }
 
@@ -8896,6 +9364,12 @@ async function openAddRule() {
 
   document.getElementById('r-e3').value = '';
 
+  document.getElementById('modal-title').textContent = 'Add routing rule';
+
+  document.getElementById('modal-save-btn').textContent = 'Add rule';
+
+  updateRuleName();
+
   document.getElementById('modal').classList.add('on');
 
   return Promise.resolve();
@@ -8949,7 +9423,13 @@ async function openEditRule(id) {
 
   updateRuleSections();
 
-  setTimeout(() => { document.getElementById('r-section').value = r.section_id; }, 0);
+  setTimeout(() => {
+
+    document.getElementById('r-section').value = r.section_id;
+
+    updateRuleName();
+
+  }, 0);
 
   document.getElementById('r-channel').value = r.channel_id;
 
@@ -8970,6 +9450,12 @@ async function openEditRule(id) {
   document.getElementById('r-e3').value = excls[2] || '';
 
   document.getElementById('r-priority').value = r.priority || 0;
+
+  document.getElementById('modal-title').textContent = 'Edit rule';
+
+  document.getElementById('modal-save-btn').textContent = 'Save changes';
+
+  updateRuleName();
 
   document.getElementById('modal').classList.add('on');
 
@@ -9035,7 +9521,7 @@ async function saveRule() {
 
     loadRules();
 
-    logAction('Rule updated: '+rule.name, true);
+    logAction('Rule updated: '+rule.name, true, {action_type:'rule'});
 
     toast('Rule updated');
 
@@ -9047,7 +9533,7 @@ async function saveRule() {
 
     loadRules();
 
-    logAction('Rule added: '+rule.name, true);
+    logAction('Rule added: '+rule.name, true, {action_type:'rule'});
 
     toast('Rule added');
 
