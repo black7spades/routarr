@@ -3204,7 +3204,9 @@ async def proxy_image(url: str):
 
             r = await c.get(url)
 
-        return Response(content=r.content, media_type=r.headers.get("content-type", "image/jpeg"))
+        return Response(content=r.content, media_type=r.headers.get("content-type", "image/jpeg"),
+
+                        headers={"Cache-Control": "public, max-age=3600"})
 
     except Exception:
 
@@ -4219,6 +4221,76 @@ async def get_filler_lists():
 
 
 
+@app.get("/api/channels/now-playing")
+
+async def get_channels_now_playing():
+
+    tunarr = cfg("tunarr_url")
+
+    if not tunarr:
+
+        return {}
+
+    try:
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        ahead_ms = now_ms + 300_000
+
+        async with httpx.AsyncClient(timeout=10) as c:
+
+            r = await c.get(
+
+                f"{tunarr}/api/guide/programming",
+
+                params={"from": now_ms, "to": ahead_ms},
+
+            )
+
+            if r.status_code != 200:
+
+                return {}
+
+            guide = r.json()
+
+            result = {}
+
+            for entry in (guide if isinstance(guide, list) else []):
+
+                ch_id = entry.get("id") or entry.get("channelId")
+
+                programs = entry.get("programs") or []
+
+                if not ch_id or not programs:
+
+                    continue
+
+                current = next(
+
+                    (p for p in programs if p.get("type") not in ("flex",)), None
+
+                ) or programs[0]
+
+                result[str(ch_id)] = {
+
+                    "title": current.get("title", ""),
+
+                    "type":  current.get("type", ""),
+
+                    "start": current.get("startTimeMs") or current.get("start"),
+
+                    "stop":  current.get("stopTimeMs")  or current.get("stop"),
+
+                }
+
+            return result
+
+    except Exception:
+
+        return {}
+
+
+
 @app.delete("/api/route/routed/{rk}")
 
 async def unroute_item(rk: str):
@@ -5053,6 +5125,18 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 .chcard-actions{margin-top:10px;text-align:right}
 
+.proc-queue-section{background:var(--s1);border:2px solid var(--acc);border-radius:10px;padding:14px 16px;margin-bottom:20px}
+
+.proc-ch-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bdr)}
+
+.proc-ch-row:last-child{border-bottom:none}
+
+.proc-ch-num{font-size:10px;color:var(--muted);font-weight:600;min-width:40px}
+
+.proc-ch-name{flex:1;font-size:12px;font-weight:500}
+
+.ch-now-playing-badge{position:absolute;top:6px;left:6px;background:#00c864;color:#001800;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;pointer-events:none;z-index:3}
+
 /* Tunarr sync progress bar */
 
 #sync-bar{display:flex;flex:1;align-items:center;gap:10px;padding:0 14px;min-width:0;opacity:0;pointer-events:none;transition:opacity .35s}
@@ -5499,6 +5583,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     </div>
 
   </div>
+
+  <div id="proc-queue"></div>
 
   <div id="ch-body"><div class="loading">Loading&hellip;</div></div>
 
@@ -6368,6 +6454,10 @@ let _autoRouteChannels = new Set();
 let _autoRouteRules = new Set();
 
 let _channelProcSettings = {};
+
+let _nowPlaying = {};
+
+let _preloadedImages = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
@@ -8699,6 +8789,8 @@ function renderChannels() {
 
   if (!allChannels.length) return;
 
+  renderProcQueue();
+
   const sort = (document.getElementById('ch-sort') || {value:'number-asc'}).value;
 
   const srcFiltered = _chSrcFilter === 'all'
@@ -8707,7 +8799,7 @@ function renderChannels() {
 
     : allChannels.filter(ch => (_chSources[ch.id] || 'plex') === _chSrcFilter);
 
-  const sorted = [...srcFiltered].sort((a, b) => {
+  const sorted = [...srcFiltered.filter(ch => !_dirtyChannels.has(ch.id))].sort((a, b) => {
 
     switch(sort) {
 
@@ -8745,12 +8837,13 @@ function renderChannels() {
 
         const needsProc = _dirtyChannels.has(ch.id);
         const autoOn = _autoRouteChannels.has(ch.id);
-        const dirtyBadge = needsProc ? '<span style="position:absolute;top:6px;right:6px;background:var(--acc);color:var(--bg);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;pointer-events:none">⚡ Needs processing</span>' : '';
+        const np = _nowPlaying[ch.id];
+        const npBadge = np && np.title ? '<span class="ch-now-playing-badge">&#9654; Now Playing</span>' : '';
         return '<div class="chcard" style="position:relative">'
 
           + bg
 
-          + dirtyBadge
+          + npBadge
 
           +'<div class="chcard-content">'
 
@@ -8837,6 +8930,10 @@ async function loadChannels(force=false) {
     loadChannelSources();
 
     loadFillerLists();
+
+    preloadChannelImages();
+
+    loadNowPlaying();
 
   } catch(e) {
 
@@ -9239,6 +9336,188 @@ async function processAll() {
   btn.textContent = 'Process All';
 
   setTimeout(loadChannels, 8000);
+
+}
+
+
+
+// ── Channel image preloading
+
+function preloadChannelImages() {
+
+  allChannels.forEach(ch => {
+
+    const url = ch.ident || ch.icon;
+
+    if (!url || _preloadedImages.has(url)) return;
+
+    _preloadedImages.add(url);
+
+    const img = new Image();
+
+    img.src = '/api/proxy-image?url=' + encodeURIComponent(url);
+
+  });
+
+}
+
+
+
+// ── Now Playing
+
+async function loadNowPlaying() {
+
+  try {
+
+    const r = await fetch('/api/channels/now-playing');
+
+    const data = await r.json();
+
+    if (typeof data === 'object' && !data.error) {
+
+      _nowPlaying = data;
+
+      renderChannels();
+
+    }
+
+  } catch(e) { /* silently ignore */ }
+
+}
+
+
+
+// ── Proc Queue
+
+function renderProcQueue() {
+
+  const el = document.getElementById('proc-queue');
+
+  if (!el) return;
+
+  const dirty = allChannels.filter(ch => _dirtyChannels.has(ch.id));
+
+  if (!dirty.length) { el.innerHTML = ''; return; }
+
+  el.innerHTML = '<div class="proc-queue-section">'
+
+    + '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+
+    + '<div>'
+
+    + '<div style="font-size:13px;font-weight:700;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">&#9889; Needs Processing</div>'
+
+    + '<div style="font-size:11px;color:var(--muted);">' + dirty.length + ' channel' + (dirty.length !== 1 ? 's' : '') + ' waiting to be processed</div>'
+
+    + '</div>'
+
+    + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+
+    + '<label style="font-size:12px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:4px"><input type="checkbox" id="pq-all" onchange="toggleAllProcQueue(this.checked)" style="width:13px;height:13px;accent-color:var(--acc);cursor:pointer"> Select All</label>'
+
+    + '<button class="btn p sm" onclick="processDirtySelected()">&#9881; Process Selected</button>'
+
+    + '</div>'
+
+    + '</div>'
+
+    + dirty.map(ch => '<div class="proc-ch-row">'
+
+      + '<input type="checkbox" class="pq-ch" data-id="' + ch.id + '" checked style="width:13px;height:13px;accent-color:var(--acc);cursor:pointer;flex-shrink:0">'
+
+      + '<span class="proc-ch-num">CH ' + ch.number + '</span>'
+
+      + '<span class="proc-ch-name">' + escHtml(ch.name) + '</span>'
+
+      + '<span style="font-size:11px;color:var(--muted)">' + ch.count.toLocaleString() + ' programs</span>'
+
+      + '</div>'
+
+    ).join('')
+
+    + '</div>';
+
+}
+
+
+
+function toggleAllProcQueue(checked) {
+
+  document.querySelectorAll('.pq-ch').forEach(cb => cb.checked = checked);
+
+}
+
+
+
+async function processDirtySelected() {
+
+  const cbs = [...document.querySelectorAll('.pq-ch:checked')];
+
+  if (!cbs.length) { toast('Select at least one channel'); return; }
+
+  const ids = cbs.map(cb => cb.dataset.id);
+
+  const channels = allChannels.filter(ch => ids.includes(ch.id));
+
+  const s = _loadProcSettings();
+
+  const btn = document.querySelector('#proc-queue .btn.p');
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Processing…'; }
+
+  let ok = 0, fail = 0;
+
+  for (let i = 0; i < channels.length; i++) {
+
+    const ch = channels[i];
+
+    if (btn) btn.textContent = 'Processing ' + (i + 1) + '/' + channels.length + '…';
+
+    try {
+
+      const r = await (await fetch('/api/channels/' + ch.id + '/process', {
+
+        method: 'POST',
+
+        headers: {'Content-Type': 'application/json'},
+
+        body: JSON.stringify({...s, channel_name: ch.name}),
+
+      })).json();
+
+      if (r.ok || !r.error) {
+
+        ok++;
+
+        logAction('Process Queue: "' + ch.name + '" done (' + ((r.stats || {}).final_content ?? '?') + ' programs)', true, {action_type: 'process', channel: ch.name});
+
+      } else {
+
+        fail++;
+
+        logAction('Process Queue: "' + ch.name + '" failed — ' + r.error, false, {action_type: 'process', channel: ch.name});
+
+      }
+
+    } catch(e) {
+
+      fail++;
+
+      logAction('Process Queue: "' + ch.name + '" error — ' + e.message, false, {action_type: 'process', channel: ch.name});
+
+    }
+
+  }
+
+  const msg = 'Processed ' + ok + '/' + channels.length + ' channel' + (channels.length !== 1 ? 's' : '') + (fail ? ', ' + fail + ' failed' : '');
+
+  toast(msg);
+
+  logAction(msg, fail === 0, {action_type: 'process'});
+
+  if (btn) { btn.disabled = false; btn.textContent = '&#9881; Process Selected'; }
+
+  setTimeout(loadChannels, 3000);
 
 }
 
