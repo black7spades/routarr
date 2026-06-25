@@ -5657,12 +5657,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div style="width:1px;background:var(--bdr);align-self:stretch;margin:0 4px"></div>
 
-    <select id="arr-bulk-filler" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:160px" onchange="updateActionBar()"><option value="">Filler list…</option></select>
-
-    <button class="btn g sm" id="arr-bulk-filler-btn" onclick="bulkRouteToFiller()" disabled>Route to Filler</button>
-
-    <div style="width:1px;background:var(--bdr);align-self:stretch;margin:0 4px"></div>
-
     <input id="arr-bulk-genre" placeholder="Genre to add&hellip;" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px;outline:none;width:160px" onkeydown="if(event.key==='Enter'){event.preventDefault();bulkAddGenre()}">
 
     <button class="btn g sm" id="arr-bulk-genre-btn" onclick="bulkAddGenre()" disabled>Add Genre</button>
@@ -7789,10 +7783,33 @@ function renderFillerLists() {
 
           + '</div>'
 
+          + '<div class="chcard-btns">'
+
+          + '<button class="btn g sm" onclick="processFiller(' + JSON.stringify(f.id) + ',' + JSON.stringify(f.name) + ')" title="Route selected items to this filler list">&#9881; Process</button>'
+
+          + '</div>'
+
           + '</div>';
 
       }).join('') + '</div>';
 
+}
+
+async function processFiller(fillerId, fillerName) {
+  const rks = Array.from(checkedItems);
+  if (!rks.length) { toast('Select items first'); return; }
+  const fid = 'filler:' + fillerId;
+  let ok = 0;
+  for (const rk of rks) {
+    const item = arrivals.find(a => a.ratingKey === rk);
+    if (!item) continue;
+    _channelOverrides[rk] = {channel_id: fid, channel_name: fillerName};
+    await routeOne(rk, item.sectionId, item.labels.join(','));
+    checkedItems.delete(rk);
+    ok++;
+  }
+  updateActionBar();
+  toast(ok + ' item' + (ok !== 1 ? 's' : '') + ' sent to ' + fillerName);
 }
 
 // ── Toast
@@ -8503,27 +8520,9 @@ async function updateActionBar() {
 
   }
 
-  const fsel = document.getElementById('arr-bulk-filler');
-
-  if (fsel && fsel.options.length <= 1) {
-
-    if (!_fillerLists.length) {
-
-      try { const d = await (await fetch('/api/filler-lists')).json(); if (Array.isArray(d)) _fillerLists = d; } catch {}
-
-    }
-
-    _fillerLists.forEach(f => { const o = document.createElement('option'); o.value = 'filler:'+f.id; o.textContent = f.name; fsel.appendChild(o); });
-
-  }
-
   const btn = document.getElementById('arr-bulk-route-btn');
 
   if (btn) btn.disabled = !sel || !sel.value;
-
-  const fbtn = document.getElementById('arr-bulk-filler-btn');
-
-  if (fbtn) fbtn.disabled = !fsel || !fsel.value;
 
   const gbtn = document.getElementById('arr-bulk-genre-btn');
 
@@ -8565,35 +8564,7 @@ async function bulkRouteChecked() {
 
 
 
-async function bulkRouteToFiller() {
 
-  const sel = document.getElementById('arr-bulk-filler');
-
-  if (!sel || !sel.value) return;
-
-  const fillerId = sel.value;
-
-  const fillerName = sel.options[sel.selectedIndex].textContent;
-
-  const rks = Array.from(checkedItems);
-
-  for (const rk of rks) {
-
-    const item = arrivals.find(a => a.ratingKey === rk);
-
-    if (!item) continue;
-
-    _channelOverrides[rk] = {channel_id: fillerId, channel_name: fillerName};
-
-    await routeOne(rk, item.sectionId, item.labels.join(','));
-
-    checkedItems.delete(rk);
-
-  }
-
-  updateActionBar();
-
-}
 
 
 
