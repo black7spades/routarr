@@ -2051,9 +2051,31 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
         filler_id = channel_id[7:]
 
-        db_track_filler_programs(filler_id, new_lineup)
+        import json as _j
 
-        all_progs = db_get_filler_programs_api(filler_id)
+        try:
+
+            gr = await client.get(f"{tunarr}/api/filler-lists/{filler_id}", timeout=30)
+
+            existing_progs = gr.json().get("programs", []) if gr.status_code == 200 else []
+
+        except Exception:
+
+            existing_progs = []
+
+        existing_ids = {p.get("program", {}).get("id") for p in existing_progs}
+
+        new_progs = []
+
+        for item in new_lineup:
+
+            prog_obj = _j.loads(item["_tp"]) if item.get("_tp") else {}
+
+            if prog_obj and item["id"] not in existing_ids:
+
+                new_progs.append({"type": item.get("type", "content"), "duration": item["duration"], "program": prog_obj})
+
+        all_progs = existing_progs + new_progs
 
         r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
 
@@ -2249,9 +2271,31 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
         filler_id = channel_id[7:]
 
-        db_track_filler_programs(filler_id, new_lineup)
+        import json as _j
 
-        all_progs = db_get_filler_programs_api(filler_id)
+        try:
+
+            gr = await client.get(f"{tunarr}/api/filler-lists/{filler_id}", timeout=30)
+
+            existing_progs = gr.json().get("programs", []) if gr.status_code == 200 else []
+
+        except Exception:
+
+            existing_progs = []
+
+        existing_ids = {p.get("program", {}).get("id") for p in existing_progs}
+
+        new_progs = []
+
+        for item in new_lineup:
+
+            prog_obj = _j.loads(item["_tp"]) if item.get("_tp") else {}
+
+            if prog_obj and item["id"] not in existing_ids:
+
+                new_progs.append({"type": item.get("type", "content"), "duration": item["duration"], "program": prog_obj})
+
+        all_progs = existing_progs + new_progs
 
         r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
 
