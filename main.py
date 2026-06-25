@@ -774,7 +774,7 @@ def db_get_filler_programs_api(filler_id: str) -> list:
 
         rows = db.execute(
 
-            "SELECT program_id, duration, program_json FROM filler_programs"
+            "SELECT program_id, duration, prog_type, program_json FROM filler_programs"
 
             " WHERE filler_id=? ORDER BY added_at",
 
@@ -788,7 +788,7 @@ def db_get_filler_programs_api(filler_id: str) -> list:
 
         try:
 
-            prog_obj = _j.loads(r[2]) if r[2] else {}
+            prog_obj = _j.loads(r[3]) if r[3] else {}
 
         except Exception:
 
@@ -798,7 +798,7 @@ def db_get_filler_programs_api(filler_id: str) -> list:
 
             prog_obj = {"id": r[0]}
 
-        result.append({"duration": r[1], "program": prog_obj})
+        result.append({"type": r[2] or "content", "duration": r[1], "program": prog_obj})
 
     return result
 
