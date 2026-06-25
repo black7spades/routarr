@@ -388,7 +388,7 @@ _LOGIN_CSS = (
 
     '*{box-sizing:border-box;margin:0;padding:0}'
 
-    'body{font-family:system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#09090e}'
+    'body{font-family:system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;background:linear-gradient(160deg,#1d1a56 0%,#09090e 65%)}'
 
     '.kb-layer{position:fixed;inset:0;background-size:cover;background-position:center;z-index:0;opacity:0;transition:opacity 2s ease-in-out;will-change:transform,opacity}'
 
@@ -2717,17 +2717,25 @@ async def _lifespan(app):
 
 try:
 
+    _vdir = os.path.dirname(os.path.abspath(__file__)) or "."
+
     APP_VERSION = "3.2." + subprocess.check_output(
 
-        ["git","rev-list","--count","HEAD"],
-
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        ["git", "-C", _vdir, "rev-list", "--count", "HEAD"],
 
         stderr=subprocess.DEVNULL).decode().strip()
 
 except Exception:
 
-    APP_VERSION = "3.2.0"
+    try:
+
+        APP_VERSION = "3.2-" + time.strftime(
+
+            "%y%m%d", time.localtime(os.path.getmtime(os.path.abspath(__file__))))
+
+    except Exception:
+
+        APP_VERSION = "3.2"
 
 
 
@@ -5235,7 +5243,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab" data-page="flows" onclick="show('flows',this)">Flows</button>
 
-    <button class="tab" data-page="activity" onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
+    <button class="tab" data-page="activity" onclick="show('activity',this);loadActivityLog()">Log</button>
 
     <button class="tab" data-page="settings" onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
 
@@ -5690,14 +5698,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   <div id="act-body"><div class="empty">No log entries yet.</div></div>
 
 
-
-  <div class="sh" style="margin-top:28px">
-
-    <div><h3 style="margin:0">Changelog</h3><div class="sub">Recent commits</div></div>
-
-  </div>
-
-  <div id="changelog-body" class="scard" style="margin-top:10px"><div class="loading">Loading&hellip;</div></div>
 
 </div>
 
@@ -7182,48 +7182,6 @@ async function loadActivityLog() {
   } catch(e) {
 
     el.innerHTML = '<div class="empty">Failed to load log: '+escHtml(String(e))+'</div>';
-
-  }
-
-}
-
-
-
-async function loadChangelog() {
-
-  const el = document.getElementById('changelog-body');
-
-  if (!el) return;
-
-  try {
-
-    const d = await (await fetch('/api/changelog')).json();
-
-    if (!d.entries || !d.entries.length) {
-
-      el.innerHTML = '<p class="sdesc">No changelog available.</p>';
-
-      return;
-
-    }
-
-    el.innerHTML = d.entries.map((e, i) =>
-
-      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">'
-
-      +'<span style="font-size:11px;font-weight:700;font-family:monospace;color:'+(i===0?'var(--acc)':'var(--muted)')+'">'+escHtml(e.sha)+'</span>'
-
-      +(e.date?'<span style="font-size:11px;color:var(--muted)">'+escHtml(e.date)+'</span>':'')
-
-      +'</div>'
-
-      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'14':'0')+'px">'+escHtml(e.message)+'</p>'
-
-    ).join('');
-
-  } catch(e) {
-
-    el.innerHTML = '<p class="sdesc">Could not load changelog.</p>';
 
   }
 
