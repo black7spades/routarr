@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY main.py .
+COPY CHANGELOG.md .
 
 # Data volume — SQLite database lives here
 VOLUME /data

@@ -212,6 +212,22 @@ def init_db():
 
             );
 
+            CREATE TABLE IF NOT EXISTS channel_proc_settings (
+
+                channel_id   TEXT PRIMARY KEY,
+
+                channel_name TEXT,
+
+                dedupe       INTEGER DEFAULT 1,
+
+                shuffle      TEXT DEFAULT 'cyclic',
+
+                pad_minutes  INTEGER DEFAULT 15,
+
+                updated_at   INTEGER
+
+            );
+
         """)
 
     seed_from_env()
@@ -2902,11 +2918,13 @@ async def clear_activity():
 
 async def get_changelog():
 
+    entries = []
+
     try:
 
         result = subprocess.run(
 
-            ["git", "log", "--oneline", "-3"],
+            ["git", "log", "--format=%h|%s|%ad", "--date=short", "-3"],
 
             capture_output=True,
 
@@ -2918,21 +2936,59 @@ async def get_changelog():
 
         )
 
-        entries = []
+        if result.returncode == 0 and result.stdout.strip():
 
-        for line in (result.stdout.strip().split("\n") if result.stdout.strip() else []):
+            for line in result.stdout.strip().split("\n"):
 
-            if " " in line:
+                parts = line.split("|", 2)
 
-                sha, _, message = line.partition(" ")
+                if len(parts) == 3:
 
-                entries.append({"sha": sha[:7], "message": message})
+                    entries.append({"sha": parts[0], "message": parts[1], "date": parts[2]})
 
-        return {"entries": entries}
+    except Exception:
 
-    except Exception as exc:
+        pass
 
-        return {"entries": [], "error": str(exc)}
+    if not entries:
+
+        try:
+
+            cl_path = Path(__file__).parent / "CHANGELOG.md"
+
+            text = cl_path.read_text(encoding="utf-8")
+
+            import re as _re
+
+            for m in _re.finditer(
+
+                r"^## \[([^\]]+)\] - (\S+)\s*\n(.*?)(?=^## |\Z)",
+
+                text, _re.MULTILINE | _re.DOTALL
+
+            ):
+
+                ver, date, body = m.group(1), m.group(2), m.group(3)
+
+                first_item = next(
+
+                    (l.lstrip("- ").strip() for l in body.splitlines() if l.strip().startswith("-")),
+
+                    ""
+
+                )
+
+                entries.append({"sha": f"v{ver}", "message": first_item or f"Release {ver}", "date": date})
+
+                if len(entries) >= 3:
+
+                    break
+
+        except Exception:
+
+            pass
+
+    return {"entries": entries[:3]}
 
 
 
@@ -4369,6 +4425,8 @@ async def process_channel(channel_id: str, request: Request):
 
         pad_mins   = int(body.get("pad_minutes", 15))
 
+        ch_name    = body.get("channel_name") or channel_id
+
         async with httpx.AsyncClient() as c:
 
             items = await fetch_channel_lineup(c, channel_id)
@@ -4441,6 +4499,26 @@ async def process_channel(channel_id: str, request: Request):
 
         clear_channel_dirty(channel_id)
 
+        with db_conn() as db:
+
+            db.execute(
+
+                "INSERT INTO channel_proc_settings"
+
+                " (channel_id,channel_name,dedupe,shuffle,pad_minutes,updated_at)"
+
+                " VALUES(?,?,?,?,?,?)"
+
+                " ON CONFLICT(channel_id) DO UPDATE SET"
+
+                " channel_name=excluded.channel_name,dedupe=excluded.dedupe,"
+
+                " shuffle=excluded.shuffle,pad_minutes=excluded.pad_minutes,"
+
+                " updated_at=excluded.updated_at",
+
+                (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, int(time.time())))
+
         return {"ok": True, "stats": stats}
 
     except Exception as e:
@@ -4458,6 +4536,30 @@ async def get_dirty_channels():
         rows = db.execute("SELECT channel_id, dirty_since FROM channel_dirty").fetchall()
 
     return {r["channel_id"]: r["dirty_since"] for r in rows}
+
+
+
+@app.get("/api/channels/proc-settings")
+
+async def get_channel_proc_settings():
+
+    with db_conn() as db:
+
+        rows = db.execute("SELECT * FROM channel_proc_settings").fetchall()
+
+    return {r["channel_id"]: {
+
+        "channel_name": r["channel_name"],
+
+        "dedupe": bool(r["dedupe"]),
+
+        "shuffle": r["shuffle"],
+
+        "pad_minutes": r["pad_minutes"],
+
+        "updated_at": r["updated_at"]
+
+    } for r in rows}
 
 
 
@@ -4932,9 +5034,9 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab"     onclick="show('rules',this)">Rules</button>
 
-    <button class="tab"     onclick="show('flows',this)">Flows</button>
-
     <button class="tab"     onclick="show('channels',this)">Channels</button>
+
+    <button class="tab"     onclick="show('flows',this)">Flows</button>
 
     <button class="tab"     onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
 
@@ -6147,6 +6249,8 @@ let _autoRouteChannels = new Set();
 
 let _autoRouteRules = new Set();
 
+let _channelProcSettings = {};
+
 let _channelOverrides = {}, _channelEditRk = null;
 
 let _plexUrl = '', _plexMachineId = '', _plexPublicUrl = '';
@@ -7006,9 +7110,15 @@ async function loadChangelog() {
 
     el.innerHTML = d.entries.map((e, i) =>
 
-      '<div style="font-size:12px;font-weight:700;color:'+(i===0?'var(--acc)':'var(--muted)')+';margin-bottom:4px">'+escHtml(e.sha)+'</div>'
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">'
 
-      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'12':'0')+'px">'+escHtml(e.message)+'</p>'
+      +'<span style="font-size:11px;font-weight:700;font-family:monospace;color:'+(i===0?'var(--acc)':'var(--muted)')+'">'+escHtml(e.sha)+'</span>'
+
+      +(e.date?'<span style="font-size:11px;color:var(--muted)">'+escHtml(e.date)+'</span>':'')
+
+      +'</div>'
+
+      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'14':'0')+'px">'+escHtml(e.message)+'</p>'
 
     ).join('');
 
@@ -8663,7 +8773,9 @@ async function openProcModal(channelId) {
 
   document.getElementById('proc-run-btn').textContent = 'Process & Save';
 
-  _applyProcSettingsToForm(_loadProcSettings());
+  const _savedCh = _channelProcSettings[channelId];
+
+  _applyProcSettingsToForm(_savedCh || _loadProcSettings());
 
   document.getElementById('proc-preset-name').value = '';
 
@@ -8700,6 +8812,8 @@ async function runProcess() {
 
 
   const body = {
+
+    channel_name: (allChannels.find(c => c.id === _procChannelId) || {}).name || '',
 
     dedupe:      document.getElementById('proc-dedupe').checked,
 
@@ -8769,6 +8883,10 @@ async function runProcess() {
 
     try { localStorage.setItem('routarr-proc', JSON.stringify(body)); } catch {}
 
+    _channelProcSettings[_procChannelId] = {dedupe:body.dedupe,shuffle:body.shuffle,pad_minutes:body.pad_minutes};
+
+    if (document.getElementById('page-flows')?.classList.contains('on')) renderFlows();
+
     const chName = document.getElementById('proc-ch-name').textContent;
 
     logAction('Processed channel "'+chName+'" \u2014 '+
@@ -8835,7 +8953,7 @@ async function processAll() {
 
         headers: {'Content-Type': 'application/json'},
 
-        body: JSON.stringify(s),
+        body: JSON.stringify({...s, channel_name: ch.name}),
 
       })).json();
 
@@ -9371,18 +9489,20 @@ async function loadFlows() {
   const el = document.getElementById('flows-body');
   if (el) el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes] = await Promise.all([
+    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes, procSetRes] = await Promise.all([
       fetch('/api/routing').catch(()=>null),
       fetch('/api/routing/auto-route').catch(()=>null),
       fetch('/api/channels').catch(()=>null),
       fetch('/api/channels/auto-route').catch(()=>null),
       fetch('/api/settings').catch(()=>null),
+      fetch('/api/channels/proc-settings').catch(()=>null),
     ]);
     if (rulesRes) { const d = await rulesRes.json().catch(()=>[]); if (Array.isArray(d)) _rulesCache = d; }
     if (ruleArRes) { const d = await ruleArRes.json().catch(()=>({})); _autoRouteRules = new Set((d.enabled||[]).map(String)); }
     if (chRes) { const d = await chRes.json().catch(()=>[]); if (Array.isArray(d)) allChannels = d; }
     if (chArRes) { const d = await chArRes.json().catch(()=>({})); _autoRouteChannels = new Set(d.enabled||[]); }
     if (settingsRes) { const d = await settingsRes.json().catch(()=>({})); _autoRoute = (d.auto_route==='1'); updateAutoRouteUI(); }
+    if (procSetRes) { const d = await procSetRes.json().catch(()=>({})); _channelProcSettings = d; }
   } catch(e) {}
   renderFlows();
 }
@@ -9410,6 +9530,80 @@ function _flowRuleCard(r, active) {
     +'</div>';
 }
 
+function shuffleLabel(v) {
+  if (v==='cyclic') return 'Cyclic shuffle';
+  if (v==='random') return 'Random shuffle';
+  return 'No shuffle';
+}
+
+function _miniRuleCard(r, active) {
+  const srcLabel = r.source==='jellyfin' ? 'JF' : 'PX';
+  const srcColor = r.source==='jellyfin' ? '#a855f7' : 'var(--acc)';
+  const sectionPart = r.section_id==='*'
+    ? '<span style="color:var(--muted);font-size:11px">any library</span>'
+    : '<span style="font-size:11px">'+escHtml(r.section_id)+'</span>';
+  const labelPart = r.label
+    ? r.label.split(',').map(g=>'<span class="pill" style="font-size:10px">'+escHtml(g.trim())+'</span>').join(' ')
+    : '<span style="color:var(--muted);font-size:11px">any genre</span>';
+  const btnStyle = active
+    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
+  return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bdr);flex-wrap:wrap">'
+    +'<span style="font-size:9px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:3px;padding:1px 5px;flex-shrink:0">'+srcLabel+'</span>'
+    +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+' — '+sectionPart+' → '+labelPart+'</div>'
+    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'</div>';
+}
+
+function _pipelineCard(ch, rules, proc) {
+  const autoOn = _autoRouteChannels.has(ch.id);
+  const activeRules   = rules.filter(r => _autoRouteRules.has(String(r.id)));
+  const inactiveRules = rules.filter(r => !_autoRouteRules.has(String(r.id)));
+
+  const rulesHtml = rules.length
+    ? '<div style="border-top:1px solid var(--bdr)">'
+        + activeRules.map(r=>_miniRuleCard(r,true)).join('')
+        + inactiveRules.map(r=>_miniRuleCard(r,false)).join('')
+        + '</div>'
+    : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No rules route to this channel yet</div>';
+
+  let procHtml;
+  if (proc) {
+    procHtml = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +(proc.dedupe ? '<span class="pill" style="font-size:11px">Dedupe</span>' : '')
+      +'<span class="pill" style="font-size:11px">'+shuffleLabel(proc.shuffle)+'</span>'
+      +(proc.pad_minutes>0 ? '<span class="pill" style="font-size:11px">'+proc.pad_minutes+'m pad</span>' : '')
+      +'<button onclick="openProcModal(\''+escHtml(ch.id)+'\')" style="margin-left:auto;padding:3px 10px;font-size:11px;background:none;border:1px solid var(--bdr);border-radius:4px;cursor:pointer;color:var(--txt);flex-shrink:0">⚙️ Process</button>'
+      +'</div>';
+  } else {
+    procHtml = '<div style="display:flex;align-items:center;gap:8px">'
+      +'<span style="font-size:12px;color:var(--muted)">Not yet processed</span>'
+      +'<button onclick="openProcModal(\''+escHtml(ch.id)+'\')" style="margin-left:auto;padding:3px 10px;font-size:11px;background:none;border:1px solid var(--bdr);border-radius:4px;cursor:pointer;color:var(--muted);flex-shrink:0">⚙️ Set up</button>'
+      +'</div>';
+  }
+
+  const borderColor = autoOn ? 'var(--acc)' : 'var(--bdr)';
+  const opacity = autoOn ? '' : ';opacity:.75';
+  const btnStyle = autoOn
+    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
+  return '<div class="scard" style="padding:0;border-left:3px solid '+borderColor+opacity+';overflow:hidden">'
+    +'<div style="padding:10px 14px;display:flex;align-items:center;gap:10px">'
+    +'<span style="font-size:10px;font-weight:700;color:var(--muted);background:var(--s3);border-radius:4px;padding:2px 6px;flex-shrink:0">CH</span>'
+    +'<div style="flex:1;font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
+    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!autoOn)+')" style="flex-shrink:0;'+btnStyle+';padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(autoOn?'⚡ Auto On':'Auto Off')+'</button>'
+    +'</div>'
+    +'<div style="padding:6px 14px;border-top:1px solid var(--bdr)">'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px">Routing rules</div>'
+    +rulesHtml
+    +'</div>'
+    +'<div style="padding:8px 14px;border-top:1px solid var(--bdr)">'
+    +'<div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Processing</div>'
+    +procHtml
+    +'</div>'
+    +'</div>';
+}
+
 function _flowChannelCard(ch, active) {
   const border = active ? 'border-left:3px solid var(--acc)' : 'border-left:3px solid var(--bdr);opacity:.65';
   const btnStyle = active
@@ -9429,10 +9623,21 @@ function renderFlows() {
   const el = document.getElementById('flows-body');
   if (!el) return;
 
-  const activeRules = _rulesCache.filter(r => _autoRouteRules.has(String(r.id)));
-  const inactiveRules = _rulesCache.filter(r => !_autoRouteRules.has(String(r.id)));
-  const activeCh = allChannels.filter(c => _autoRouteChannels.has(c.id));
-  const inactiveCh = allChannels.filter(c => !_autoRouteChannels.has(c.id));
+  const chRuleMap = {};
+  for (const r of _rulesCache) {
+    if (!chRuleMap[r.channel_id]) chRuleMap[r.channel_id] = [];
+    chRuleMap[r.channel_id].push(r);
+  }
+
+  const autoChIds = new Set(_autoRouteChannels);
+  for (const r of _rulesCache) {
+    if (_autoRouteRules.has(String(r.id))) autoChIds.add(r.channel_id);
+  }
+
+  const activePipelines = allChannels.filter(c => autoChIds.has(c.id));
+  const inactiveCh      = allChannels.filter(c => !autoChIds.has(c.id));
+  const coveredRuleIds  = new Set(activePipelines.flatMap(c => (chRuleMap[c.id]||[]).map(r=>r.id)));
+  const inactiveRules   = _rulesCache.filter(r => !_autoRouteRules.has(String(r.id)) && !coveredRuleIds.has(r.id));
 
   if (!_rulesCache.length && !allChannels.length) {
     el.innerHTML = '<div class="empty">No rules or channels configured yet. Add rules on the Rules page to get started.</div>';
@@ -9441,16 +9646,17 @@ function renderFlows() {
 
   let html = '';
 
-  if (activeRules.length || activeCh.length) {
-    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0">Active flows</h3><div class="sub">Running automatically on every scan</div></div></div>';
-    html += '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:28px">';
-    activeRules.forEach(r => { html += _flowRuleCard(r, true); });
-    activeCh.forEach(c => { html += _flowChannelCard(c, true); });
+  if (activePipelines.length) {
+    html += '<div class="sh" style="margin-bottom:12px"><div><h3 style="margin:0">Active pipelines</h3><div class="sub">These channels are automated on every scan</div></div></div>';
+    html += '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:28px">';
+    for (const ch of activePipelines) {
+      html += _pipelineCard(ch, chRuleMap[ch.id]||[], _channelProcSettings[ch.id]||null);
+    }
     html += '</div>';
   }
 
   if (inactiveRules.length || inactiveCh.length) {
-    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Enable to add to auto flows</div></div></div>';
+    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Enable to add to automated pipelines</div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     inactiveRules.forEach(r => { html += _flowRuleCard(r, false); });
     inactiveCh.forEach(c => { html += _flowChannelCard(c, false); });
@@ -9459,7 +9665,6 @@ function renderFlows() {
 
   el.innerHTML = html || '<div class="empty">No rules or channels yet.</div>';
 }
-
 async function loadChannelAutoRoute() {
   try {
     const d = await (await fetch('/api/channels/auto-route')).json();
