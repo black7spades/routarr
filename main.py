@@ -390,32 +390,30 @@ _LOGIN_CSS = (
 
     'body{font-family:system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#09090e}'
 
-    '.kb-layer{position:fixed;inset:0;background-size:cover;background-position:center;filter:brightness(.22) saturate(.6);z-index:0;opacity:0;transition:opacity 2s ease-in-out;will-change:transform,opacity}'
+    '.kb-layer{position:fixed;inset:0;background-size:cover;background-position:center;z-index:0;opacity:0;transition:opacity 2s ease-in-out;will-change:transform,opacity}'
 
-    '.kb-layer.on{opacity:1;animation:kenburns 14s ease-in-out forwards}'
+    '.kb-layer.on{opacity:.28;animation:kenburns 14s ease-in-out forwards}'
 
     '@keyframes kenburns{'
     '0%{transform:scale(1) translate(0%,0%)}'
     '50%{transform:scale(1.08) translate(-1.5%,-0.8%)}'
     '100%{transform:scale(1.14) translate(-2.5%,-1.5%)}}'
 
-    '.card{position:relative;z-index:1;background:rgba(9,9,14,.72);border:1px solid rgba(117,206,200,.18);border-radius:14px;padding:42px 38px;width:340px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 8px 40px rgba(0,0,0,.65)}'
+    '.card{position:relative;z-index:1;background:rgba(9,9,14,.72);border:1px solid rgba(136,126,203,.18);border-radius:14px;padding:42px 38px;width:340px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 8px 40px rgba(0,0,0,.65)}'
 
-    '.logo{font-size:22px;font-weight:700;color:#75cec8;text-align:center;margin-bottom:28px;letter-spacing:1px}'
+    '.logo{font-size:22px;font-weight:700;color:#887ecb;text-align:center;margin-bottom:28px;letter-spacing:1px}'
 
     'label{font-size:11px;font-weight:700;color:#4d7080;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px}'
 
     'input{width:100%;background:rgba(15,15,26,.85);border:1px solid #1c1c32;border-radius:6px;padding:10px 12px;color:#dde8ec;font-size:14px;outline:none;margin-bottom:14px;transition:border .15s}'
 
-    'input:focus{border-color:#75cec8}'
+    'input:focus{border-color:#887ecb}'
 
-    '.sbtn{width:100%;background:#75cec8;color:#09090e;border:none;border-radius:6px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.3px}'
+    '.sbtn{width:100%;background:#887ecb;color:#09090e;border:none;border-radius:6px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.3px}'
 
-    '.sbtn:hover{background:#8fd8d2}'
+    '.sbtn:hover{background:#9d94d4}'
 
     '.lerr{color:#c46c71;font-size:13px;margin-bottom:12px;text-align:center;padding:8px;background:rgba(196,108,113,.08);border-radius:6px;border:1px solid rgba(196,108,113,.2)}'
-
-    '.hint{font-size:11px;color:#4d7080;text-align:center;margin-top:18px}'
 
 )
 
@@ -489,8 +487,6 @@ def _login_page(error: str = '') -> HTMLResponse:
         'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'
 
         '</script>'
-
-        '<div class="hint">Set credentials in Settings &#8594; Security</div>'
 
         '</div></body></html>'
 
@@ -2683,7 +2679,19 @@ async def _lifespan(app):
 
 
 
-APP_VERSION = "3.2.0"
+try:
+
+    APP_VERSION = "3.2." + subprocess.check_output(
+
+        ["git","rev-list","--count","HEAD"],
+
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+
+        stderr=subprocess.DEVNULL).decode().strip()
+
+except Exception:
+
+    APP_VERSION = "3.2.0"
 
 
 
@@ -5195,8 +5203,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab" data-page="settings" onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
 
-    <button class="tab" data-page="help" onclick="show('help',this)">Help</button>
-
   </nav>
 
   <button class="logout-btn" onclick="doLogout()" title="Log out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
@@ -5659,174 +5665,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 
-<!-- HELP -->
-
-
-
-<div id="page-help" class="page">
-
-
-
-  <div class="sh"><div><h2>Help</h2><div class="sub">How Routarr works, and what everything means</div></div></div>
-
-
-
-  <div class="scard">
-
-
-
-    <h3>Quick start</h3>
-
-
-
-    <p class="sdesc" style="margin-bottom:12px">New here? Complete these steps once to get set up.</p>
-
-
-
-    <ol style="margin:0 0 0 20px;line-height:2">
-
-
-
-      <li>Go to <strong>Settings &rarr; Connections</strong>, enter your Plex and Tunarr addresses, and hit <strong>Save connections</strong>.</li>
-
-
-
-      <li>Click <strong>Detect</strong> next to Plex source ID to link Tunarr to your Plex server.</li>
-
-
-
-      <li>Go to <strong>Library Mapping</strong>, hit <strong>Auto-configure from Tunarr</strong>, then <strong>Save mapping</strong>.</li>
-
-
-
-      <li>Go to <strong>Routing Rules</strong> and add a rule for each genre or library you want auto-routed.</li>
-
-
-
-      <li>Head to the <strong>Route</strong> tab and hit <strong>Check Plex Now</strong> to see new content.</li>
-
-
-
-    </ol>
-
-
-
-  </div>
-
-
-
-  <div class="scard">
-
-
-
-    <h3>Key concepts</h3>
-
-
-
-    <div style="margin-bottom:18px">
-
-      <p style="font-weight:600;margin-bottom:4px">Route</p>
-
-      <p class="sdesc">To route content is to add it to a Tunarr channel lineup. When you click Route on a movie, Routarr adds that movie to the matching channel's playlist. It does not download anything or change Plex.</p>
-
-    </div>
-
-
-
-    <div style="margin-bottom:18px">
-
-      <p style="font-weight:600;margin-bottom:4px">Routing rule</p>
-
-      <p class="sdesc">A rule tells Routarr where to send content. Each rule specifies a source (Plex or Jellyfin), an optional library, optional genre tags, and a target Tunarr channel. When new content arrives, Routarr checks rules from highest to lowest priority until one matches.</p>
-
-    </div>
-
-
-
-    <div style="margin-bottom:18px">
-
-      <p style="font-weight:600;margin-bottom:4px">Library mapping</p>
-
-      <p class="sdesc">Tunarr has its own internal library index separate from Plex. Library mapping tells Routarr which Plex library corresponds to which Tunarr library &mdash; this is how Routarr finds content in Tunarr when adding it to a channel.</p>
-
-    </div>
-
-
-
-    <div style="margin-bottom:18px">
-
-      <p style="font-weight:600;margin-bottom:4px">Priority</p>
-
-      <p class="sdesc">Rules are checked highest to lowest priority number. If content matches two rules, the higher-numbered one wins. Use overrides for specificity &mdash; e.g. priority 20 "Anime films &rarr; Anime" beats priority 10 "All movies &rarr; Movies".</p>
-
-    </div>
-
-
-
-    <div style="margin-bottom:18px">
-
-      <p style="font-weight:600;margin-bottom:4px">Process</p>
-
-      <p class="sdesc">Processing a channel re-filters its existing lineup using your Plex library as the source &mdash; removing content not in your library, applying episode cutoffs, sorting by air date, and setting a program limit. Run it from the Channels tab after major changes.</p>
-
-    </div>
-
-
-
-    <div style="margin-bottom:4px">
-
-      <p style="font-weight:600;margin-bottom:4px">SSH workaround channel</p>
-
-      <p class="sdesc">Some Tunarr channels can't be updated via the normal API (a known Tunarr bug). For these, Routarr connects directly to your server over SSH and edits the lineup file on disk. Only a handful of channels need this &mdash; most work fine without it.</p>
-
-    </div>
-
-
-
-  </div>
-
-
-
-  <div class="scard">
-
-
-
-    <h3>Common workflows</h3>
-
-
-
-    <p style="font-weight:600;margin-bottom:6px">Adding a routing rule</p>
-
-    <p class="sdesc" style="margin-bottom:14px">Settings &rarr; Routing Rules &rarr; <strong>+ Add rule</strong> &rarr; pick source, library, genre(s), and target channel &rarr; Save. Takes effect immediately on the next scan.</p>
-
-
-
-    <p style="font-weight:600;margin-bottom:6px">Routing content that shows "no rule"</p>
-
-    <p class="sdesc" style="margin-bottom:14px">These items did not match any routing rule. Either add a rule that covers them, or edit the item's genres (click the genre chips) to match an existing rule, then hit Route.</p>
-
-
-
-    <p style="font-weight:600;margin-bottom:6px">Cleaning up a channel</p>
-
-    <p class="sdesc" style="margin-bottom:14px">Channels tab &rarr; <strong>&#9881; Process</strong> on the channel &rarr; choose a Plex library &rarr; configure limits and cutoff &rarr; <strong>Process &amp; Save</strong>.</p>
-
-
-
-    <p style="font-weight:600;margin-bottom:6px">Content not appearing after routing</p>
-
-    <p class="sdesc">Check library mapping first (Settings &rarr; Library Mapping). Then hit <strong>Check Plex Now</strong> &mdash; Tunarr needs to index content before Routarr can find it. If a channel still shows the wrong count, go to Channels and hit Refresh.</p>
-
-
-
-  </div>
-
-
-
-</div><!-- /help -->
-
-
-
 <!-- SETTINGS -->
 
 <div id="page-settings" class="page">
@@ -6210,22 +6048,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 
-  <div class="scard" style="margin-top:20px" id="about-scard">
-
-    <h3>About</h3>
-
-    <p class="sdesc">Routarr v<strong id="ver-routarr">…</strong> — connected service versions.</p>
-
-    <div id="ver-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:14px">
-
-      <div class="loading">Loading…</div>
-
-    </div>
-
-  </div>
-
-
-
 </div><!-- /settings -->
 
 
@@ -6233,6 +6055,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 </main>
 
 <div id="toast"></div>
+
+<div id="app-footer" style="position:fixed;bottom:12px;right:16px;font-size:11px;color:var(--muted);z-index:50;pointer-events:none;user-select:none">v<span id="footer-ver">…</span></div>
 
 
 
@@ -6539,7 +6363,9 @@ function escHtml(s) {
 
 const PALETTES = [
 
-  {id:'c64',     label:'C64',           acc:'#75cec8',acc2:'#c46c71',green:'#56ac4d',yellow:'#c8c459',blue:'#706deb',bg:'#09090e',s1:'#0f0f1a',s2:'#16162a',s3:'#1d1d36',txt:'#dde8ec',muted:'#4d7080',bdr:'#1c1c32'},
+  {id:'c64',     label:'64 Softcore',   acc:'#75cec8',acc2:'#c46c71',green:'#56ac4d',yellow:'#c8c459',blue:'#706deb',bg:'#09090e',s1:'#0f0f1a',s2:'#16162a',s3:'#1d1d36',txt:'#dde8ec',muted:'#4d7080',bdr:'#1c1c32'},
+
+  {id:'c64hard', label:'64 Hardcore',   acc:'#887ecb',acc2:'#9f4e44',green:'#5cab5e',yellow:'#c9d487',blue:'#6abfc6',bg:'#50459b',s1:'#3c3586',s2:'#2c266e',s3:'#1d1a56',txt:'#ffffff',muted:'#adadad',bdr:'#626262'},
 
 ];
 
@@ -7141,7 +6967,7 @@ async function loadVersions() {
 
     const v = await (await fetch('/api/versions')).json();
 
-    const el = document.getElementById('ver-routarr');
+    const el = document.getElementById('footer-ver');
 
     if (el) el.textContent = v.routarr || '?';
 
@@ -7579,7 +7405,7 @@ async function pollTunarrSync() {
 
 }
 
-checkHealth(); checkSetup(); startTunarrSync();
+checkHealth(); checkSetup(); startTunarrSync(); loadVersions();
 
 setInterval(checkHealth, 30000);
 
