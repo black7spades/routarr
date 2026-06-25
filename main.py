@@ -5374,9 +5374,15 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div style="flex:1"></div>
 
-    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="updateActionBar()"><option value="">Pick a channel&hellip;</option></select>
+    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="updateActionBar()"><option value="">— clear —</option></select>
 
     <button class="btn p sm" id="arr-bulk-route-btn" onclick="bulkRouteChecked()" disabled>Route to Channel</button>
+
+    <div style="width:1px;background:var(--bdr);align-self:stretch;margin:0 4px"></div>
+
+    <select id="arr-bulk-filler" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:160px" onchange="updateActionBar()"><option value="">Filler list…</option></select>
+
+    <button class="btn g sm" id="arr-bulk-filler-btn" onclick="bulkRouteToFiller()" disabled>Route to Filler</button>
 
     <div style="width:1px;background:var(--bdr);align-self:stretch;margin:0 4px"></div>
 
@@ -8201,13 +8207,30 @@ async function updateActionBar() {
     }
 
     allChannels.forEach(c => { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; sel.appendChild(o); });
-    if (_fillerLists.length) { const og = document.createElement('optgroup'); og.label = 'Filler Lists'; _fillerLists.forEach(f => { const o = document.createElement('option'); o.value = 'filler:'+f.id; o.textContent = '\u25a1 '+f.name; og.appendChild(o); }); sel.appendChild(og); }
+
+  }
+
+  const fsel = document.getElementById('arr-bulk-filler');
+
+  if (fsel && fsel.options.length <= 1) {
+
+    if (!_fillerLists.length) {
+
+      try { const d = await (await fetch('/api/filler-lists')).json(); if (Array.isArray(d)) _fillerLists = d; } catch {}
+
+    }
+
+    _fillerLists.forEach(f => { const o = document.createElement('option'); o.value = 'filler:'+f.id; o.textContent = f.name; fsel.appendChild(o); });
 
   }
 
   const btn = document.getElementById('arr-bulk-route-btn');
 
   if (btn) btn.disabled = !sel || !sel.value;
+
+  const fbtn = document.getElementById('arr-bulk-filler-btn');
+
+  if (fbtn) fbtn.disabled = !fsel || !fsel.value;
 
   const gbtn = document.getElementById('arr-bulk-genre-btn');
 
@@ -8236,6 +8259,38 @@ async function bulkRouteChecked() {
     if (!item) continue;
 
     _channelOverrides[rk] = {channel_id: channelId, channel_name: channelName};
+
+    await routeOne(rk, item.sectionId, item.labels.join(','));
+
+    checkedItems.delete(rk);
+
+  }
+
+  updateActionBar();
+
+}
+
+
+
+async function bulkRouteToFiller() {
+
+  const sel = document.getElementById('arr-bulk-filler');
+
+  if (!sel || !sel.value) return;
+
+  const fillerId = sel.value;
+
+  const fillerName = sel.options[sel.selectedIndex].textContent;
+
+  const rks = Array.from(checkedItems);
+
+  for (const rk of rks) {
+
+    const item = arrivals.find(a => a.ratingKey === rk);
+
+    if (!item) continue;
+
+    _channelOverrides[rk] = {channel_id: fillerId, channel_name: fillerName};
 
     await routeOne(rk, item.sectionId, item.labels.join(','));
 
