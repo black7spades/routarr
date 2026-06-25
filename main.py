@@ -1753,11 +1753,21 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
     if override_channel_id:
 
-        channels = await tunarr_channels(client)
+        if override_channel_id.startswith("filler:"):
 
-        ch = next((c for c in channels if c["id"] == override_channel_id), None)
+            _fls = await _get_filler_lists(client)
 
-        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+            _fl = next((f for f in _fls if f["id"] == override_channel_id[7:]), None)
+
+            resolved = (override_channel_id, _fl["name"] if _fl else override_channel_id[7:])
+
+        else:
+
+            channels = await tunarr_channels(client)
+
+            ch = next((c for c in channels if c["id"] == override_channel_id), None)
+
+            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -1857,9 +1867,17 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
     tunarr = cfg("tunarr_url")
 
-    r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
+    if channel_id.startswith("filler:"):
 
-                          json={"type": "manual", "lineup": new_lineup, "append": True}, timeout=30)
+        r = await client.post(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+
+                              json={"programs": new_lineup}, timeout=30)
+
+    else:
+
+        r = await client.post(f"{tunarr}/api/channels/{channel_id}/programming",
+
+                              json={"type": "manual", "lineup": new_lineup, "append": True}, timeout=30)
 
     ok, method = r.status_code == 200, "api"
 
@@ -1879,7 +1897,9 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
         mark_routed(rk, channel_id, channel_name)
 
-        mark_channel_dirty(channel_id)
+        if not channel_id.startswith("filler:"):
+
+            mark_channel_dirty(channel_id)
 
     return {"success": ok, "channel": channel_name, "method": method,
 
@@ -1897,11 +1917,21 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     if override_channel_id:
 
-        channels = await tunarr_channels(client)
+        if override_channel_id.startswith("filler:"):
 
-        ch = next((c for c in channels if c["id"] == override_channel_id), None)
+            _fls = await _get_filler_lists(client)
 
-        resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
+            _fl = next((f for f in _fls if f["id"] == override_channel_id[7:]), None)
+
+            resolved = (override_channel_id, _fl["name"] if _fl else override_channel_id[7:])
+
+        else:
+
+            channels = await tunarr_channels(client)
+
+            ch = next((c for c in channels if c["id"] == override_channel_id), None)
+
+            resolved = (override_channel_id, ch["name"] if ch else override_channel_id)
 
     else:
 
@@ -2017,13 +2047,21 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     tunarr = cfg("tunarr_url")
 
-    r = await client.post(
+    if channel_id.startswith("filler:"):
 
-        f"{tunarr}/api/channels/{channel_id}/programming",
+        r = await client.post(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
 
-        json={"type": "manual", "lineup": new_lineup, "append": True},
+                              json={"programs": new_lineup}, timeout=30)
 
-        timeout=30)
+    else:
+
+        r = await client.post(
+
+            f"{tunarr}/api/channels/{channel_id}/programming",
+
+            json={"type": "manual", "lineup": new_lineup, "append": True},
+
+            timeout=30)
 
     ok = r.status_code == 200
 
@@ -2033,7 +2071,9 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
         mark_routed(rk, channel_id, channel_name)
 
-        mark_channel_dirty(channel_id)
+        if not channel_id.startswith("filler:"):
+
+            mark_channel_dirty(channel_id)
 
     return {"success": ok, "channel": channel_name, "method": "api",
 
@@ -4139,6 +4179,46 @@ async def channels():
 
 
 
+async def _get_filler_lists(client) -> list:
+
+    tunarr = cfg("tunarr_url")
+
+    if not tunarr:
+
+        return []
+
+    try:
+
+        r = await client.get(f"{tunarr}/api/filler-lists", timeout=10)
+
+        if r.status_code == 200:
+
+            return r.json()
+
+    except Exception:
+
+        pass
+
+    return []
+
+
+
+@app.get("/api/filler-lists")
+
+async def get_filler_lists():
+
+    try:
+
+        async with httpx.AsyncClient() as c:
+
+            return await _get_filler_lists(c)
+
+    except Exception as e:
+
+        return _err(e)
+
+
+
 @app.delete("/api/route/routed/{rk}")
 
 async def unroute_item(rk: str):
@@ -5026,23 +5106,23 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <header>
 
-  <div class="logo">&#9654; ROUTARR</div>
+  <div class="logo" onclick="goHome()" style="cursor:pointer;user-select:none" title="Go to home page">&#9654; ROUTARR</div>
 
   <nav>
 
-    <button class="tab on"  onclick="show('arrivals',this)">Media</button>
+    <button class="tab on" data-page="arrivals" onclick="show('arrivals',this)">Media</button>
 
-    <button class="tab"     onclick="show('rules',this)">Rules</button>
+    <button class="tab" data-page="rules" onclick="show('rules',this)">Rules</button>
 
-    <button class="tab"     onclick="show('channels',this)">Channels</button>
+    <button class="tab" data-page="channels" onclick="show('channels',this)">Channels</button>
 
-    <button class="tab"     onclick="show('flows',this)">Flows</button>
+    <button class="tab" data-page="flows" onclick="show('flows',this)">Flows</button>
 
-    <button class="tab"     onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
+    <button class="tab" data-page="activity" onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
 
-    <button class="tab"     onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
+    <button class="tab" data-page="settings" onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
 
-    <button class="tab"     onclick="show('help',this)">Help</button>
+    <button class="tab" data-page="help" onclick="show('help',this)">Help</button>
 
   </nav>
 
@@ -5426,6 +5506,18 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh" style="margin-top:28px">
 
+    <div><h3 style="margin:0">Filler Lists</h3><div class="sub">Tunarr filler lists &mdash; route short clips and bumpers to these as an alternative to channels</div></div>
+
+    <button class="btn g sm" onclick="loadFillerLists()">Refresh</button>
+
+  </div>
+
+  <div id="filler-body"><div class="loading">Loading&hellip;</div></div>
+
+
+
+  <div class="sh" style="margin-top:28px">
+
     <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries logged here</div></div>
 
     <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
@@ -5739,6 +5831,32 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
           <button class="btn g" onclick="setTheme('light')" id="theme-light-btn">&#9728; Light</button>
 
         </div>
+
+      </div>
+
+      <div class="field">
+
+        <label>Home page</label>
+
+        <select id="home-page-sel" onchange="setHomePage(this.value)" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:5px 8px;font-size:13px;outline:none;margin-top:6px;cursor:pointer">
+
+          <option value="arrivals">Media</option>
+
+          <option value="rules">Rules</option>
+
+          <option value="channels">Channels</option>
+
+          <option value="flows">Flows</option>
+
+          <option value="activity">Log</option>
+
+          <option value="settings">Settings</option>
+
+          <option value="help">Help</option>
+
+        </select>
+
+        <div class="hint">Click the &#9654; ROUTARR logo to return to this page.</div>
 
       </div>
 
@@ -6239,7 +6357,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <script>
 
-let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSections = [], tunarrLibraries = [];
+let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], _fillerLists = [], plexSections = [], tunarrLibraries = [];
 
 let _dirtyChannels = new Set();
 
@@ -6870,6 +6988,12 @@ function toggleTheme() {
 
   if (pal) applyPalette(pal);
 
+  const _hp = localStorage.getItem('routarr-home-page') || 'arrivals';
+
+  const _hpSel = document.getElementById('home-page-sel');
+
+  if (_hpSel) _hpSel.value = _hp;
+
 })();
 
 
@@ -7159,6 +7283,128 @@ function show(name, btn) {
 }
 
 
+
+function goHome() {
+
+  const pg = localStorage.getItem('routarr-home-page') || 'arrivals';
+
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
+
+  const btn = document.querySelector('button.tab[data-page="' + pg + '"]');
+
+  show(pg, btn);
+
+}
+
+
+
+function setHomePage(pg) {
+
+  localStorage.setItem('routarr-home-page', pg);
+
+}
+
+
+
+function _chanOpts(selectedId) {
+
+  let html = allChannels.map(c =>
+
+    '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(c.name) + '">CH ' + c.number + ' — ' + escHtml(c.name) + '</option>'
+
+  ).join('');
+
+  if (_fillerLists.length) {
+
+    html += '<optgroup label="Filler Lists">';
+
+    html += _fillerLists.map(f =>
+
+      '<option value="filler:' + f.id + '"' + ('filler:' + f.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(f.name) + '">□ ' + escHtml(f.name) + '</option>'
+
+    ).join('');
+
+    html += '</optgroup>';
+
+  }
+
+  return html;
+
+}
+
+
+
+async function loadFillerLists() {
+
+  const el = document.getElementById('filler-body');
+
+  if (el) el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+
+  try {
+
+    const d = await (await fetch('/api/filler-lists')).json();
+
+    _fillerLists = Array.isArray(d) ? d : [];
+
+  } catch(e) {
+
+    _fillerLists = [];
+
+  }
+
+  renderFillerLists();
+
+}
+
+
+
+function renderFillerLists() {
+
+  const el = document.getElementById('filler-body');
+
+  if (!el) return;
+
+  if (!_fillerLists.length) {
+
+    el.innerHTML = '<div class="empty">No filler lists found in Tunarr.</div>';
+
+    return;
+
+  }
+
+  el.innerHTML = '<div class="grid">'
+
+    + _fillerLists.map(f => {
+
+        const cnt = f.contentCount != null ? f.contentCount : (f.count != null ? f.count : 0);
+
+        return '<div class="chcard" style="position:relative;border:1px solid var(--bdr)">'
+
+          + '<div class="chcard-content">'
+
+          + '<div>'
+
+          + '<div class="chnum" style="color:var(--muted);font-size:10px;letter-spacing:.8px">FILLER</div>'
+
+          + '<div class="chtitle">' + escHtml(f.name) + '</div>'
+
+          + '</div>'
+
+          + '<div>'
+
+          + '<div class="chcount">' + cnt.toLocaleString() + '</div>'
+
+          + '<div class="chcl">programs</div>'
+
+          + '</div>'
+
+          + '</div>'
+
+          + '</div>';
+
+      }).join('') + '</div>';
+
+}
 
 // ── Toast
 
@@ -7584,11 +7830,7 @@ function renderArrivals() {
 
     if (_channelEditRk === rk) {
 
-      const _opts = allChannels.map(c =>
-
-        '<option value="'+c.id+'" data-name="'+escHtml(c.name)+'"'+(c.id===_chId?' selected':'')+'>'+escHtml(c.name)+'</option>'
-
-      ).join('');
+      const _opts = _chanOpts(_chId);
 
       ch = '<select class="ch-ov-sel" style="background:var(--s2);border:1px solid var(--acc);color:var(--txt);border-radius:5px;padding:3px 5px;font-size:12px;max-width:200px"'
 
@@ -7869,6 +8111,7 @@ async function updateActionBar() {
     }
 
     allChannels.forEach(c => { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; sel.appendChild(o); });
+    if (_fillerLists.length) { const og = document.createElement('optgroup'); og.label = 'Filler Lists'; _fillerLists.forEach(f => { const o = document.createElement('option'); o.value = 'filler:'+f.id; o.textContent = '\u25a1 '+f.name; og.appendChild(o); }); sel.appendChild(og); }
 
   }
 
@@ -8592,6 +8835,8 @@ async function loadChannels(force=false) {
     renderChannels();
 
     loadChannelSources();
+
+    loadFillerLists();
 
   } catch(e) {
 
@@ -10086,7 +10331,7 @@ function runBulkRuleAction(sel) {
 
       const chSel = document.getElementById('bulk-ch-sel');
 
-      chSel.innerHTML = allChannels.map(c => '<option value="'+c.id+'" data-name="'+c.name+'">CH '+c.number+' — '+c.name+'</option>').join('');
+      chSel.innerHTML = _chanOpts();
 
       row.style.display = 'flex';
 
@@ -10270,9 +10515,7 @@ async function openAddRule() {
 
   document.getElementById('r-channel').innerHTML =
 
-    '<option value="">\u2014 pick a channel \u2014</option>'
-
-    + allChannels.map(c => '<option value="'+c.id+'" data-name="'+c.name+'">CH '+c.number+' \u2014 '+c.name+'</option>').join('');
+    '<option value="">\u2014 pick a channel \u2014</option>' + _chanOpts();
 
 
 
@@ -10345,9 +10588,7 @@ async function openEditRule(id) {
 
   document.getElementById('r-channel').innerHTML =
 
-    '<option value="">\u2014 pick a channel \u2014</option>'
-
-    + allChannels.map(c => '<option value="'+c.id+'" data-name="'+c.name+'">CH '+c.number+' \u2014 '+c.name+'</option>').join('');
+    '<option value="">\u2014 pick a channel \u2014</option>' + _chanOpts();
 
   if (!_libMapSections.length && !_jfSections.length) {
 
