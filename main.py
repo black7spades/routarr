@@ -732,13 +732,13 @@ def resolve_channel(section_id: str, labels: list[str], title: str = "") -> Opti
 
         tf = rule.get("title_filter", "").strip()
 
-        if tf and _title_lc and tf.lower() not in _title_lc:
+        if tf and _title_lc and not any(t in _title_lc for t in [x.strip().lower() for x in tf.split(",") if x.strip()]):
 
             continue
 
         te = rule.get("title_excl", "").strip()
 
-        if te and _title_lc and te.lower() in _title_lc:
+        if te and _title_lc and any(t in _title_lc for t in [x.strip().lower() for x in te.split(",") if x.strip()]):
 
             continue
 
@@ -776,13 +776,13 @@ def resolve_channel_full(section_id: str, labels: list, title: str = "") -> Opti
 
         tf = rule.get("title_filter", "").strip()
 
-        if tf and _title_lc and tf.lower() not in _title_lc:
+        if tf and _title_lc and not any(t in _title_lc for t in [x.strip().lower() for x in tf.split(",") if x.strip()]):
 
             continue
 
         te = rule.get("title_excl", "").strip()
 
-        if te and _title_lc and te.lower() in _title_lc:
+        if te and _title_lc and any(t in _title_lc for t in [x.strip().lower() for x in te.split(",") if x.strip()]):
 
             continue
 
@@ -6168,17 +6168,17 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Title contains <span style="color:var(--muted);font-weight:400">(include only if title contains this — blank = any)</span></label>
+      <label>Title contains <span style="color:var(--muted);font-weight:400">(comma-separated — any match includes; blank = any title)</span></label>
 
-      <input id="r-title-filter" placeholder="e.g. Part 1" style="width:100%">
+      <input id="r-title-filter" placeholder="e.g. GI Joe, Happy Tree Friends, Part 1" style="width:100%">
 
     </div>
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Exclude if title contains <span style="color:var(--muted);font-weight:400">(skip if title matches)</span></label>
+      <label>Exclude if title contains <span style="color:var(--muted);font-weight:400">(comma-separated — any match excludes)</span></label>
 
-      <input id="r-title-excl" placeholder="e.g. Trailer" style="width:100%">
+      <input id="r-title-excl" placeholder="e.g. Trailer, Teaser, Clip" style="width:100%">
 
     </div>
 
