@@ -698,6 +698,36 @@ def resolve_channel(section_id: str, labels: list[str]) -> Optional[tuple[str, s
 
 
 
+def resolve_channel_full(section_id: str, labels: list) -> Optional[tuple]:
+
+    """Like resolve_channel but also returns matched rule id."""
+
+    for rule in routing_rules():
+
+        if rule["section_id"] not in ("*", section_id):
+
+            continue
+
+        if rule["label"] != "":
+
+            required = [g.strip() for g in rule["label"].split(",") if g.strip()]
+
+            if not all(g in labels for g in required):
+
+                continue
+
+        excl = [g.strip() for g in rule.get("label_excl", "").split(",") if g.strip()]
+
+        if excl and any(g in labels for g in excl):
+
+            continue
+
+        return rule["channel_id"], rule["channel_name"], rule["id"]
+
+    return None
+
+
+
 # ── Cache ─────────────────────────────────────────────────────────────────────
 
 
@@ -2219,13 +2249,15 @@ async def _run_scan_once():
 
         _scan_state["last_scan"] = time.time()
 
-        # Auto-route new arrivals (global or per-channel setting)
+        # Auto-route new arrivals (global, per-channel, or per-rule setting)
 
         _ar_global = cfg("auto_route") == "1"
 
         _ar_ch = set(x for x in (cfg("auto_route_channels") or "").split(",") if x.strip())
 
-        if _ar_global or _ar_ch:
+        _ar_rules = set(x for x in (cfg("auto_route_rules") or "").split(",") if x.strip())
+
+        if _ar_global or _ar_ch or _ar_rules:
 
             try:
 
@@ -2249,15 +2281,27 @@ async def _run_scan_once():
 
                         pass
 
-                    _pending = [
+                    _pending = []
 
-                        i for i in _all
+                    for _i in _all:
 
-                        if i.get("targetChannel") and not i.get("alreadyRouted")
+                        if not _i.get("targetChannel") or _i.get("alreadyRouted"):
 
-                        and (_ar_global or i["targetChannel"] in _ar_ch)
+                            continue
 
-                    ]
+                        if _ar_global or _i["targetChannel"] in _ar_ch:
+
+                            _pending.append(_i)
+
+                            continue
+
+                        if _ar_rules:
+
+                            _full = resolve_channel_full(_i["sectionId"], _i.get("labels", []))
+
+                            if _full and str(_full[2]) in _ar_rules:
+
+                                _pending.append(_i)
 
                     for _item in _pending:
 
@@ -3622,6 +3666,54 @@ async def delete_routing(rule_id: int):
         db.execute("DELETE FROM routing_rules WHERE id=?", (rule_id,))
 
     return {"ok": True}
+
+
+
+@app.get("/api/routing/auto-route")
+
+async def get_routing_auto_route():
+
+    raw = cfg("auto_route_rules") or ""
+
+    enabled = [x for x in raw.split(",") if x.strip()]
+
+    return {"enabled": enabled}
+
+
+
+@app.put("/api/routing/auto-route")
+
+async def set_routing_auto_route(body: dict):
+
+    raw = cfg("auto_route_rules") or ""
+
+    enabled = set(x for x in raw.split(",") if x.strip())
+
+    if body.get("enable_all"):
+
+        with db_conn() as db:
+
+            rows = db.execute("SELECT id FROM routing_rules").fetchall()
+
+        enabled = {str(r["id"]) for r in rows}
+
+    else:
+
+        rule_id = str(body.get("rule_id", ""))
+
+        if rule_id:
+
+            if body.get("enabled"):
+
+                enabled.add(rule_id)
+
+            else:
+
+                enabled.discard(rule_id)
+
+    cfg_set({"auto_route_rules": ",".join(enabled)})
+
+    return {"enabled": list(enabled)}
 
 
 
@@ -5016,6 +5108,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       </label>
 
+      <button class="btn g sm" onclick="enableAllRulesAutoRoute()" title="Enable auto-route on all rules">Enable All Auto</button>
+
       <button class="btn p sm" onclick="openAddRule()">+ Add rule</button>
 
     </div>
@@ -5030,11 +5124,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <th style="width:32px;text-align:center"><input type="checkbox" id="rules-chk-all" onchange="toggleAllRules(this)" style="cursor:pointer;accent-color:var(--acc)"></th><th class="th-sort" onclick="sortRules('name')">Rule name <span class="sort-ind" id="si-name"></span></th><th class="th-sort" onclick="sortRules('source')">Source <span class="sort-ind" id="si-source"></span></th><th class="th-sort" onclick="sortRules('section')">Library <span class="sort-ind" id="si-section"></span></th><th>Genres</th><th>Exclude</th>
 
-        <th class="th-sort" onclick="sortRules('channel')">Plays on <span class="sort-ind" id="si-channel"></span></th><th class="th-sort" onclick="sortRules('priority')">Priority <span class="sort-ind" id="si-priority"></span></th><th></th>
+        <th class="th-sort" onclick="sortRules('channel')">Plays on <span class="sort-ind" id="si-channel"></span></th><th class="th-sort" onclick="sortRules('priority')">Priority <span class="sort-ind" id="si-priority"></span></th><th style="text-align:center;white-space:nowrap">Auto</th><th></th>
 
       </tr></thead>
 
-      <tbody id="rules-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      <tbody id="rules-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
 
     </table>
 
@@ -5950,6 +6044,8 @@ let _dirtyChannels = new Set();
 let _autoRoute = false;
 
 let _autoRouteChannels = new Set();
+
+let _autoRouteRules = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
@@ -9213,6 +9309,40 @@ async function routeAllNow() {
   }
 }
 
+async function loadRuleAutoRoute() {
+  try {
+    const d = await (await fetch('/api/routing/auto-route')).json();
+    _autoRouteRules = new Set((d.enabled || []).map(String));
+    _renderRulesTable();
+  } catch {}
+}
+
+async function toggleRuleAutoRoute(ruleId, enabled) {
+  if (enabled) _autoRouteRules.add(String(ruleId));
+  else _autoRouteRules.delete(String(ruleId));
+  _renderRulesTable();
+  try {
+    await fetch('/api/routing/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rule_id: ruleId, enabled})
+    });
+  } catch {}
+}
+
+async function enableAllRulesAutoRoute() {
+  _autoRouteRules = new Set(_rulesCache.map(r => String(r.id)));
+  _renderRulesTable();
+  try {
+    await fetch('/api/routing/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enable_all: true})
+    });
+    logAction('Auto-route enabled for all rules', true, {action_type:'rule'});
+  } catch {}
+}
+
 async function loadAutoRouteSetting() {
   try {
     const d = await (await fetch('/api/settings')).json();
@@ -9245,7 +9375,14 @@ async function setAutoRoute(enabled) {
 
 async function loadRules() {
 
-  const rules = await (await fetch('/api/routing')).json();
+  const [rulesRes, arRes] = await Promise.all([
+    fetch('/api/routing'),
+    fetch('/api/routing/auto-route').catch(() => null),
+  ]);
+
+  const rules = await rulesRes.json();
+
+  if (arRes) { const ar = await arRes.json().catch(()=>({})); _autoRouteRules = new Set((ar.enabled || []).map(String)); }
 
   _rulesCache = rules;
 
@@ -9272,7 +9409,7 @@ function _renderRulesTable() {
 
   if (!_rulesCache.length) {
 
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No rules yet. Add one below.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No rules yet. Add one below.</td></tr>';
 
     _updateRulesPP(0, 1);
 
@@ -9337,6 +9474,8 @@ function _renderRulesTable() {
     + '<td style="font-size:13px">' + r.channel_name + '</td>'
 
     + '<td style="text-align:center;color:var(--muted);font-size:13px">' + r.priority + '</td>'
+
+    + '<td style="text-align:center"><button onclick="toggleRuleAutoRoute(' + r.id + ','+(!_autoRouteRules.has(String(r.id)))+')" style="background:none;border:1px solid '+(_autoRouteRules.has(String(r.id))?'var(--acc)':'var(--bdr)')+';color:'+(_autoRouteRules.has(String(r.id))?'var(--acc)':'var(--muted)')+';padding:2px 7px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap" title="Toggle auto-route for this rule">'+ (_autoRouteRules.has(String(r.id)) ? '⚡ On' : 'Off') +'</button></td>'
 
     + '<td style="white-space:nowrap"><button class="edit-btn" onclick="openEditRule(' + r.id + ')" style="margin-right:4px;background:none;border:1px solid var(--bdr);color:var(--txt);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">&#x270E;</button>'
 
