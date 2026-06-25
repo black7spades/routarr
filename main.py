@@ -2918,11 +2918,13 @@ async def clear_activity():
 
 async def get_changelog():
 
+    entries = []
+
     try:
 
         result = subprocess.run(
 
-            ["git", "log", "--oneline", "-3"],
+            ["git", "log", "--format=%h|%s|%ad", "--date=short", "-3"],
 
             capture_output=True,
 
@@ -2934,21 +2936,59 @@ async def get_changelog():
 
         )
 
-        entries = []
+        if result.returncode == 0 and result.stdout.strip():
 
-        for line in (result.stdout.strip().split("\n") if result.stdout.strip() else []):
+            for line in result.stdout.strip().split("\n"):
 
-            if " " in line:
+                parts = line.split("|", 2)
 
-                sha, _, message = line.partition(" ")
+                if len(parts) == 3:
 
-                entries.append({"sha": sha[:7], "message": message})
+                    entries.append({"sha": parts[0], "message": parts[1], "date": parts[2]})
 
-        return {"entries": entries}
+    except Exception:
 
-    except Exception as exc:
+        pass
 
-        return {"entries": [], "error": str(exc)}
+    if not entries:
+
+        try:
+
+            cl_path = Path(__file__).parent / "CHANGELOG.md"
+
+            text = cl_path.read_text(encoding="utf-8")
+
+            import re as _re
+
+            for m in _re.finditer(
+
+                r"^## \[([^\]]+)\] - (\S+)\s*\n(.*?)(?=^## |\Z)",
+
+                text, _re.MULTILINE | _re.DOTALL
+
+            ):
+
+                ver, date, body = m.group(1), m.group(2), m.group(3)
+
+                first_item = next(
+
+                    (l.lstrip("- ").strip() for l in body.splitlines() if l.strip().startswith("-")),
+
+                    ""
+
+                )
+
+                entries.append({"sha": f"v{ver}", "message": first_item or f"Release {ver}", "date": date})
+
+                if len(entries) >= 3:
+
+                    break
+
+        except Exception:
+
+            pass
+
+    return {"entries": entries[:3]}
 
 
 
@@ -7070,9 +7110,15 @@ async function loadChangelog() {
 
     el.innerHTML = d.entries.map((e, i) =>
 
-      '<div style="font-size:12px;font-weight:700;color:'+(i===0?'var(--acc)':'var(--muted)')+';margin-bottom:4px">'+escHtml(e.sha)+'</div>'
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">'
 
-      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'12':'0')+'px">'+escHtml(e.message)+'</p>'
+      +'<span style="font-size:11px;font-weight:700;font-family:monospace;color:'+(i===0?'var(--acc)':'var(--muted)')+'">'+escHtml(e.sha)+'</span>'
+
+      +(e.date?'<span style="font-size:11px;color:var(--muted)">'+escHtml(e.date)+'</span>':'')
+
+      +'</div>'
+
+      +'<p class="sdesc" style="margin-bottom:'+(i<d.entries.length-1?'14':'0')+'px">'+escHtml(e.message)+'</p>'
 
     ).join('');
 
