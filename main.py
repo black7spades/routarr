@@ -5088,6 +5088,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 #proc-modal.on{display:flex}
 
+#clear-confirm-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center}
+
+#clear-confirm-modal.on{display:flex}
+
 .mbox{background:var(--s1);border:1px solid var(--bdr);border-radius:12px;padding:24px;width:480px;max-width:95vw}
 
 .mbox h3{font-size:14px;font-weight:600;margin-bottom:16px}
@@ -5359,7 +5363,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div style="flex:1"></div>
 
-    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="updateActionBar()"><option value="">— clear —</option></select>
+    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="onBulkChannelChange()"><option value="">— clear —</option></select>
 
     <button class="btn p sm" id="arr-bulk-route-btn" onclick="bulkRouteChecked()" disabled>Route to Channel</button>
 
@@ -6425,6 +6429,30 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <button class="btn g" onclick="closeProcModal()">Cancel</button>
 
       <button class="btn p" id="proc-run-btn" onclick="runProcess()">Process &amp; Save</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+
+<!-- Clear Association Confirm Modal -->
+
+<div id="clear-confirm-modal" class="">
+
+  <div class="mbox" style="width:360px">
+
+    <h3>Clear routing association?</h3>
+
+    <p id="clear-confirm-msg" style="font-size:13px;color:var(--muted);margin:0 0 20px"></p>
+
+    <div class="row" style="justify-content:flex-end;gap:8px">
+
+      <button class="btn g" onclick="closeClearModal()">Cancel</button>
+
+      <button class="btn sm" style="background:var(--acc2);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer" onclick="doClearAssociations()">Yes, clear</button>
 
     </div>
 
@@ -8154,6 +8182,74 @@ async function bulkRouteChecked() {
 }
 
 
+
+function onBulkChannelChange() {
+
+  const sel = document.getElementById('arr-bulk-channel');
+
+  if (sel && sel.value === '' && checkedItems.size > 0) {
+
+    const n = checkedItems.size;
+
+    const msg = document.getElementById('clear-confirm-msg');
+
+    if (msg) msg.textContent = 'Remove routing association for ' + n + ' selected item' + (n !== 1 ? 's' : '') + '? They will need to be re-routed manually.';
+
+    document.getElementById('clear-confirm-modal').classList.add('on');
+
+  } else {
+
+    updateActionBar();
+
+  }
+
+}
+
+
+
+function closeClearModal() {
+
+  document.getElementById('clear-confirm-modal').classList.remove('on');
+
+  const sel = document.getElementById('arr-bulk-channel');
+
+  if (sel && allChannels.length) sel.value = allChannels[0].id;
+
+  updateActionBar();
+
+}
+
+
+
+async function doClearAssociations() {
+
+  document.getElementById('clear-confirm-modal').classList.remove('on');
+
+  const rks = Array.from(checkedItems);
+
+  for (const rk of rks) {
+
+    try { await fetch('/api/route/routed/' + rk, {method: 'DELETE'}); } catch {}
+
+    delete _channelOverrides[rk];
+
+    delete routeStatus[rk];
+
+    const item = arrivals.find(a => a.ratingKey === rk);
+
+    if (item) { item.targetChannel = null; item.targetChannelName = null; item.alreadyRouted = false; item.routedTo = null; }
+
+    checkedItems.delete(rk);
+
+  }
+
+  updateActionBar();
+
+  renderArrivals();
+
+  toast('Cleared ' + rks.length + ' association' + (rks.length !== 1 ? 's' : ''));
+
+}
 
 
 
