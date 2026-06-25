@@ -4588,7 +4588,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     </div>
 
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
 
       <button class="btn g sm" onclick="openAddRule()">+ Add rule</button>
 
@@ -4597,6 +4597,32 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <button class="btn g sm" onclick="document.getElementById('import-file').click()">Import rules</button>
 
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importRules(this)">
+
+      <div id="bulk-rule-bar" style="display:none;align-items:center;gap:6px;border-left:1px solid var(--bdr);padding-left:10px;margin-left:2px">
+
+        <span id="bulk-rule-count" style="font-size:12px;color:var(--muted)"></span>
+
+        <select id="bulk-rule-action" onchange="runBulkRuleAction(this)" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;cursor:pointer;outline:none">
+          <option value="">With selected…</option>
+          <option value="delete">&#x1F5D1; Delete</option>
+          <option value="export">&#x2193; Export</option>
+          <option value="channel">&#x21AA; Change channel…</option>
+          <option value="priority">&#x2605; Change priority…</option>
+        </select>
+
+        <div id="bulk-ch-row" style="display:none;align-items:center;gap:6px">
+          <select id="bulk-ch-sel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;outline:none"></select>
+          <button class="btn p sm" onclick="applyBulkChannel()">Apply</button>
+          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
+        </div>
+
+        <div id="bulk-pri-row" style="display:none;align-items:center;gap:6px">
+          <input id="bulk-pri-val" type="number" value="10" min="0" style="width:68px;background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 8px;font-size:12px;outline:none">
+          <button class="btn p sm" onclick="applyBulkPriority()">Apply</button>
+          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
+        </div>
+
+      </div>
 
     </div>
 
@@ -5275,7 +5301,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="mbox">
 
-    <h3>Add routing rule</h3>
+    <h3 id="modal-title">Add routing rule</h3>
+
+    <div style="font-size:12px;color:var(--muted);background:var(--s2);border-radius:5px;padding:6px 10px;margin-bottom:14px;border:1px solid var(--bdr)">
+      <span style="opacity:.55">Rule name: </span><span id="r-name-preview" style="font-weight:500">—</span>
+    </div>
 
     <div class="fg" style="margin-bottom:12px">
 
@@ -5283,7 +5313,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <label>Source</label>
 
-        <select id="r-source" onchange="updateRuleSections()">
+        <select id="r-source" onchange="updateRuleSections();updateRuleName()">
 
           <option value="plex">Plex</option>
 
@@ -5297,7 +5327,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <label>Library</label>
 
-        <select id="r-section"><option value="">Loading…</option></select>
+        <select id="r-section" onchange="updateRuleName()"><option value="">Loading…</option></select>
 
       </div>
 
@@ -5309,11 +5339,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div style="display:flex;gap:6px">
 
-        <input id="r-g1" placeholder="e.g. Animation" style="flex:1;min-width:0">
+        <input id="r-g1" placeholder="e.g. Animation" style="flex:1;min-width:0" oninput="updateRuleName()">
 
-        <input id="r-g2" placeholder="2nd genre" style="flex:1;min-width:0">
+        <input id="r-g2" placeholder="2nd genre" style="flex:1;min-width:0" oninput="updateRuleName()">
 
-        <input id="r-g3" placeholder="3rd genre" style="flex:1;min-width:0">
+        <input id="r-g3" placeholder="3rd genre" style="flex:1;min-width:0" oninput="updateRuleName()">
 
       </div>
 
@@ -5339,7 +5369,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <label>Send to channel</label>
 
-      <select id="r-channel"><option value="">Loading…</option></select>
+      <select id="r-channel" onchange="updateRuleName()"><option value="">Loading…</option></select>
 
     </div>
 
@@ -5355,7 +5385,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <button class="btn g" onclick="closeModal()">Cancel</button>
 
-      <button class="btn p" onclick="saveRule()">Add rule</button>
+      <button class="btn p" id="modal-save-btn" onclick="saveRule()">Add rule</button>
 
     </div>
 
@@ -8708,6 +8738,8 @@ function toggleAllRules(chk) {
 
   });
 
+  _updateBulkBar();
+
 }
 
 function _ruleChkChange(chk) {
@@ -8715,6 +8747,8 @@ function _ruleChkChange(chk) {
   const id = parseInt(chk.dataset.id);
 
   if (chk.checked) _rulesSelected.add(id); else _rulesSelected.delete(id);
+
+  _updateBulkBar();
 
   const allChk = document.getElementById('rules-chk-all');
 
@@ -8775,6 +8809,210 @@ function setRulesPage(d) {
   _rulesPage = Math.max(1, _rulesPage + d);
 
   _renderRulesTable();
+
+}
+
+// ── Bulk rule actions ─────────────────────────────────────────────────────────
+
+function _updateBulkBar() {
+
+  const n = _rulesSelected.size;
+
+  const bar = document.getElementById('bulk-rule-bar');
+
+  if (!bar) return;
+
+  if (n === 0) {
+
+    bar.style.display = 'none';
+
+    _cancelBulkSub();
+
+    return;
+
+  }
+
+  bar.style.display = 'flex';
+
+  const lbl = document.getElementById('bulk-rule-count');
+
+  if (lbl) lbl.textContent = n + ' selected';
+
+}
+
+function runBulkRuleAction(sel) {
+
+  const action = sel.value;
+
+  sel.value = '';
+
+  _cancelBulkSub();
+
+  if (action === 'delete') {
+
+    bulkDeleteRules();
+
+  } else if (action === 'export') {
+
+    exportSelectedRules();
+
+  } else if (action === 'channel') {
+
+    const row = document.getElementById('bulk-ch-row');
+
+    if (row) {
+
+      const chSel = document.getElementById('bulk-ch-sel');
+
+      chSel.innerHTML = allChannels.map(c => '<option value="'+c.id+'" data-name="'+c.name+'">CH '+c.number+' — '+c.name+'</option>').join('');
+
+      row.style.display = 'flex';
+
+    }
+
+  } else if (action === 'priority') {
+
+    const row = document.getElementById('bulk-pri-row');
+
+    if (row) row.style.display = 'flex';
+
+  }
+
+}
+
+function _cancelBulkSub() {
+
+  const cr = document.getElementById('bulk-ch-row');
+
+  const pr = document.getElementById('bulk-pri-row');
+
+  if (cr) cr.style.display = 'none';
+
+  if (pr) pr.style.display = 'none';
+
+}
+
+async function bulkDeleteRules() {
+
+  const ids = [..._rulesSelected];
+
+  if (!ids.length) return;
+
+  if (!confirm('Delete ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + '?')) return;
+
+  await Promise.all(ids.map(id => fetch('/api/routing/' + id, {method: 'DELETE'})));
+
+  _rulesSelected.clear();
+
+  toast('Deleted ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+function exportSelectedRules() {
+
+  const ids = new Set(_rulesSelected);
+
+  const subset = _rulesCache.filter(r => ids.has(r.id));
+
+  const payload = {version: 1, exported_at: new Date().toISOString(), rules: subset};
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+
+  const a = document.createElement('a');
+
+  a.href = URL.createObjectURL(blob);
+
+  a.download = 'routarr-rules-selected.json';
+
+  a.click();
+
+}
+
+async function applyBulkChannel() {
+
+  const chSel = document.getElementById('bulk-ch-sel');
+
+  const chId = chSel.value;
+
+  const chName = chSel.options[chSel.selectedIndex]?.dataset.name || '';
+
+  if (!chId) return;
+
+  const ids = [..._rulesSelected];
+
+  await Promise.all(ids.map(id => {
+
+    const r = _rulesCache.find(x => x.id === id);
+
+    if (!r) return;
+
+    const updated = {...r, channel_id: chId, channel_name: chName,
+
+      name: makeRuleName(r.section_id, r.label, chName)};
+
+    return fetch('/api/routing/' + id, {method: 'PUT', headers: {'Content-Type':'application/json'},
+
+      body: JSON.stringify(updated)});
+
+  }));
+
+  _cancelBulkSub();
+
+  toast('Updated channel for ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+async function applyBulkPriority() {
+
+  const val = parseInt(document.getElementById('bulk-pri-val').value) || 0;
+
+  const ids = [..._rulesSelected];
+
+  await Promise.all(ids.map(id => {
+
+    const r = _rulesCache.find(x => x.id === id);
+
+    if (!r) return;
+
+    return fetch('/api/routing/' + id, {method: 'PUT', headers: {'Content-Type':'application/json'},
+
+      body: JSON.stringify({...r, priority: val})});
+
+  }));
+
+  _cancelBulkSub();
+
+  toast('Set priority ' + val + ' on ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's'));
+
+  await loadRules();
+
+}
+
+// ── Rule name live preview ────────────────────────────────────────────────────
+
+function updateRuleName() {
+
+  const chSel = document.getElementById('r-channel');
+
+  const chName = chSel?.options[chSel.selectedIndex]?.dataset.name || '';
+
+  const secVal = document.getElementById('r-section')?.value || '';
+
+  const g1 = document.getElementById('r-g1')?.value.trim() || '';
+
+  const g2 = document.getElementById('r-g2')?.value.trim() || '';
+
+  const g3 = document.getElementById('r-g3')?.value.trim() || '';
+
+  const label = [g1, g2, g3].filter(Boolean).join(',');
+
+  const preview = document.getElementById('r-name-preview');
+
+  if (preview) preview.textContent = makeRuleName(secVal, label, chName) || '—';
 
 }
 
@@ -8854,6 +9092,12 @@ async function openAddRule() {
 
   document.getElementById('r-e3').value = '';
 
+  document.getElementById('modal-title').textContent = 'Add routing rule';
+
+  document.getElementById('modal-save-btn').textContent = 'Add rule';
+
+  updateRuleName();
+
   document.getElementById('modal').classList.add('on');
 
   return Promise.resolve();
@@ -8907,7 +9151,13 @@ async function openEditRule(id) {
 
   updateRuleSections();
 
-  setTimeout(() => { document.getElementById('r-section').value = r.section_id; }, 0);
+  setTimeout(() => {
+
+    document.getElementById('r-section').value = r.section_id;
+
+    updateRuleName();
+
+  }, 0);
 
   document.getElementById('r-channel').value = r.channel_id;
 
@@ -8928,6 +9178,12 @@ async function openEditRule(id) {
   document.getElementById('r-e3').value = excls[2] || '';
 
   document.getElementById('r-priority').value = r.priority || 0;
+
+  document.getElementById('modal-title').textContent = 'Edit rule';
+
+  document.getElementById('modal-save-btn').textContent = 'Save changes';
+
+  updateRuleName();
 
   document.getElementById('modal').classList.add('on');
 
