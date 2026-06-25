@@ -228,6 +228,22 @@ def init_db():
 
             );
 
+            CREATE TABLE IF NOT EXISTS filler_programs (
+
+                filler_id   TEXT NOT NULL,
+
+                program_id  TEXT NOT NULL,
+
+                duration    INTEGER DEFAULT 0,
+
+                prog_type   TEXT DEFAULT 'content',
+
+                added_at    INTEGER NOT NULL DEFAULT 0,
+
+                PRIMARY KEY (filler_id, program_id)
+
+            );
+
         """)
 
     seed_from_env()
@@ -667,6 +683,50 @@ def clear_channel_dirty(channel_id: str):
     with db_conn() as db:
 
         db.execute("DELETE FROM channel_dirty WHERE channel_id = ?", (channel_id,))
+
+
+
+def db_track_filler_programs(filler_id: str, programs: list):
+
+    """Upsert programs into the local filler tracking table."""
+
+    now = int(time.time())
+
+    with db_conn() as db:
+
+        for p in programs:
+
+            db.execute(
+
+                "INSERT OR REPLACE INTO filler_programs"
+
+                "(filler_id, program_id, duration, prog_type, added_at)"
+
+                " VALUES(?,?,?,?,?)",
+
+                (filler_id, p["id"], p.get("duration", 0), p.get("type", "content"), now)
+
+            )
+
+
+
+def db_get_filler_programs(filler_id: str) -> list:
+
+    """Return all tracked programs for a filler list as lineup-format dicts."""
+
+    with db_conn() as db:
+
+        rows = db.execute(
+
+            "SELECT program_id, duration, prog_type FROM filler_programs"
+
+            " WHERE filler_id=? ORDER BY added_at",
+
+            (filler_id,)
+
+        ).fetchall()
+
+    return [{"id": r[0], "duration": r[1], "type": r[2]} for r in rows]
 
 
 
@@ -1719,15 +1779,15 @@ async def _channel_existing_ids(client, channel_id: str) -> set:
 
         if channel_id.startswith("filler:"):
 
-            r = await client.get(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+            ids = {p["id"] for p in db_get_filler_programs(channel_id[7:])}
 
-                                 params={"offset": 0, "limit": 100000}, timeout=60)
+            cache_set(cache_key, ids)
 
-        else:
+            return ids
 
-            r = await client.get(f"{tunarr}/api/channels/{channel_id}/programming",
+        r = await client.get(f"{tunarr}/api/channels/{channel_id}/programming",
 
-                                 params={"offset": 0, "limit": 100000}, timeout=60)
+                             params={"offset": 0, "limit": 100000}, timeout=60)
 
         if r.status_code != 200:
 
@@ -1877,9 +1937,15 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None):
 
     if channel_id.startswith("filler:"):
 
-        r = await client.put(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+        filler_id = channel_id[7:]
 
-                             json={"programs": new_lineup}, timeout=30)
+        db_track_filler_programs(filler_id, new_lineup)
+
+        all_progs = db_get_filler_programs(filler_id)
+
+        r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
+
+                             json={"name": channel_name, "programs": all_progs}, timeout=30)
 
     else:
 
@@ -2057,9 +2123,15 @@ async def route_jellyfin_item(client, rk: str, section_id: str, labels: list, ov
 
     if channel_id.startswith("filler:"):
 
-        r = await client.put(f"{tunarr}/api/filler-lists/{channel_id[7:]}/content",
+        filler_id = channel_id[7:]
 
-                             json={"programs": new_lineup}, timeout=30)
+        db_track_filler_programs(filler_id, new_lineup)
+
+        all_progs = db_get_filler_programs(filler_id)
+
+        r = await client.put(f"{tunarr}/api/filler-lists/{filler_id}",
+
+                             json={"name": channel_name, "programs": all_progs}, timeout=30)
 
     else:
 
