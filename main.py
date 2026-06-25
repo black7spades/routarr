@@ -698,6 +698,36 @@ def resolve_channel(section_id: str, labels: list[str]) -> Optional[tuple[str, s
 
 
 
+def resolve_channel_full(section_id: str, labels: list) -> Optional[tuple]:
+
+    """Like resolve_channel but also returns matched rule id."""
+
+    for rule in routing_rules():
+
+        if rule["section_id"] not in ("*", section_id):
+
+            continue
+
+        if rule["label"] != "":
+
+            required = [g.strip() for g in rule["label"].split(",") if g.strip()]
+
+            if not all(g in labels for g in required):
+
+                continue
+
+        excl = [g.strip() for g in rule.get("label_excl", "").split(",") if g.strip()]
+
+        if excl and any(g in labels for g in excl):
+
+            continue
+
+        return rule["channel_id"], rule["channel_name"], rule["id"]
+
+    return None
+
+
+
 # ── Cache ─────────────────────────────────────────────────────────────────────
 
 
@@ -2219,21 +2249,69 @@ async def _run_scan_once():
 
         _scan_state["last_scan"] = time.time()
 
-        # Auto-route new arrivals if enabled
+        # Auto-route new arrivals (global, per-channel, or per-rule setting)
 
-        if cfg("auto_route") == "1":
+        _ar_global = cfg("auto_route") == "1"
+
+        _ar_ch = set(x for x in (cfg("auto_route_channels") or "").split(",") if x.strip())
+
+        _ar_rules = set(x for x in (cfg("auto_route_rules") or "").split(",") if x.strip())
+
+        if _ar_global or _ar_ch or _ar_rules:
 
             try:
 
                 async with httpx.AsyncClient() as _c:
 
-                    _items = await plex_new_content(_c, days)
+                    _all: list = []
 
-                    _pending = [i for i in _items if i.get("targetChannel") and not i.get("alreadyRouted")]
+                    try:
+
+                        _all += await plex_new_content(_c, days)
+
+                    except Exception:
+
+                        pass
+
+                    try:
+
+                        _all += await jellyfin_new_content(_c, days)
+
+                    except Exception:
+
+                        pass
+
+                    _pending = []
+
+                    for _i in _all:
+
+                        if not _i.get("targetChannel") or _i.get("alreadyRouted"):
+
+                            continue
+
+                        if _ar_global or _i["targetChannel"] in _ar_ch:
+
+                            _pending.append(_i)
+
+                            continue
+
+                        if _ar_rules:
+
+                            _full = resolve_channel_full(_i["sectionId"], _i.get("labels", []))
+
+                            if _full and str(_full[2]) in _ar_rules:
+
+                                _pending.append(_i)
 
                     for _item in _pending:
 
-                        _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item["labels"])
+                        if _item.get("source") == "jellyfin":
+
+                            _r = await route_jellyfin_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
+
+                        else:
+
+                            _r = await route_item(_c, _item["ratingKey"], _item["sectionId"], _item.get("labels", []))
 
                         if _r.get("success"):
 
@@ -2241,7 +2319,9 @@ async def _run_scan_once():
 
                     if _pending:
 
-                        _cache.pop(f"plex_new_{days}", None)
+                        for _k in [f"plex_new_{days}", f"jf_new_{days}"]:
+
+                            _cache.pop(_k, None)
 
             except Exception as _exc:
 
@@ -3589,6 +3669,54 @@ async def delete_routing(rule_id: int):
 
 
 
+@app.get("/api/routing/auto-route")
+
+async def get_routing_auto_route():
+
+    raw = cfg("auto_route_rules") or ""
+
+    enabled = [x for x in raw.split(",") if x.strip()]
+
+    return {"enabled": enabled}
+
+
+
+@app.put("/api/routing/auto-route")
+
+async def set_routing_auto_route(body: dict):
+
+    raw = cfg("auto_route_rules") or ""
+
+    enabled = set(x for x in raw.split(",") if x.strip())
+
+    if body.get("enable_all"):
+
+        with db_conn() as db:
+
+            rows = db.execute("SELECT id FROM routing_rules").fetchall()
+
+        enabled = {str(r["id"]) for r in rows}
+
+    else:
+
+        rule_id = str(body.get("rule_id", ""))
+
+        if rule_id:
+
+            if body.get("enabled"):
+
+                enabled.add(rule_id)
+
+            else:
+
+                enabled.discard(rule_id)
+
+    cfg_set({"auto_route_rules": ",".join(enabled)})
+
+    return {"enabled": list(enabled)}
+
+
+
 @app.get("/api/routing/export")
 
 async def export_routing():
@@ -4291,6 +4419,134 @@ async def get_dirty_channels():
 
 
 
+@app.get("/api/channels/auto-route")
+
+async def get_channel_auto_route():
+
+    raw = cfg("auto_route_channels") or ""
+
+    enabled = [x for x in raw.split(",") if x.strip()]
+
+    return {"enabled": enabled}
+
+
+
+@app.put("/api/channels/auto-route")
+
+async def set_channel_auto_route(body: dict):
+
+    raw = cfg("auto_route_channels") or ""
+
+    enabled = set(x for x in raw.split(",") if x.strip())
+
+    if body.get("enable_all"):
+
+        try:
+
+            async with httpx.AsyncClient() as c:
+
+                channels = await tunarr_channels(c)
+
+            enabled = {ch["id"] for ch in channels}
+
+        except Exception:
+
+            pass
+
+    else:
+
+        ch_id = body.get("channel_id", "")
+
+        if ch_id:
+
+            if body.get("enabled"):
+
+                enabled.add(ch_id)
+
+            else:
+
+                enabled.discard(ch_id)
+
+    cfg_set({"auto_route_channels": ",".join(enabled)})
+
+    return {"enabled": list(enabled)}
+
+
+
+@app.post("/api/route/now")
+
+async def route_now(request: Request, days: int = 14):
+
+    """Immediately route all pending items for all sources."""
+
+    ip = request.client.host if request.client else "unknown"
+
+    if not _rate_ok(ip, "route_now", 5, 60):
+
+        return JSONResponse({"error": "Too many route requests"}, status_code=429)
+
+    try:
+
+        async with httpx.AsyncClient() as c:
+
+            all_items: list = []
+
+            try:
+
+                plex_items = await plex_new_content(c, days)
+
+                all_items += plex_items
+
+            except Exception:
+
+                pass
+
+            try:
+
+                jf_items = await jellyfin_new_content(c, days)
+
+                all_items += jf_items
+
+            except Exception:
+
+                pass
+
+            pending = [i for i in all_items if i.get("targetChannel") and not i.get("alreadyRouted")]
+
+            results, ch_seen = [], set()
+
+            for item in pending:
+
+                if item.get("source") == "jellyfin":
+
+                    r = await route_jellyfin_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+
+                else:
+
+                    r = await route_item(c, item["ratingKey"], item["sectionId"], item.get("labels", []))
+
+                results.append({"title": item["title"], **r})
+
+                if r.get("success"):
+
+                    ch_seen.add(r.get("channel", ""))
+
+            for k in list(_cache.keys()):
+
+                if k.startswith(("plex_new_", "jf_new_", "ch_existing_")):
+
+                    del _cache[k]
+
+            routed_count = len([r for r in results if r.get("success")])
+
+            return {"routed": routed_count, "total": len(results), "channels": len(ch_seen)}
+
+    except Exception as e:
+
+        return _err(e)
+
+
+
 @app.get("/api/cache/clear")
 
 async def clear_cache_ep():
@@ -4852,6 +5108,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       </label>
 
+      <button class="btn g sm" onclick="enableAllRulesAutoRoute()" title="Enable auto-route on all rules">Enable All Auto</button>
+
       <button class="btn p sm" onclick="openAddRule()">+ Add rule</button>
 
     </div>
@@ -4866,11 +5124,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <th style="width:32px;text-align:center"><input type="checkbox" id="rules-chk-all" onchange="toggleAllRules(this)" style="cursor:pointer;accent-color:var(--acc)"></th><th class="th-sort" onclick="sortRules('name')">Rule name <span class="sort-ind" id="si-name"></span></th><th class="th-sort" onclick="sortRules('source')">Source <span class="sort-ind" id="si-source"></span></th><th class="th-sort" onclick="sortRules('section')">Library <span class="sort-ind" id="si-section"></span></th><th>Genres</th><th>Exclude</th>
 
-        <th class="th-sort" onclick="sortRules('channel')">Plays on <span class="sort-ind" id="si-channel"></span></th><th class="th-sort" onclick="sortRules('priority')">Priority <span class="sort-ind" id="si-priority"></span></th><th></th>
+        <th class="th-sort" onclick="sortRules('channel')">Plays on <span class="sort-ind" id="si-channel"></span></th><th class="th-sort" onclick="sortRules('priority')">Priority <span class="sort-ind" id="si-priority"></span></th><th style="text-align:center;white-space:nowrap">Auto</th><th></th>
 
       </tr></thead>
 
-      <tbody id="rules-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      <tbody id="rules-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
 
     </table>
 
@@ -4941,6 +5199,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="btn g sm" onclick="loadChannels(true)">Refresh</button>
 
     <button class="btn g sm" id="proc-all-btn" onclick="processAll()" title="Apply last-used process settings to every channel">Process All</button>
+
+    <button class="btn p sm" onclick="routeAllNow()" title="Route all pending items to their matched channels right now">⚡ Route All Now</button>
+
+    <button class="btn g sm" onclick="enableAllAutoRoute()" title="Enable auto-route for every channel">Enable All Auto</button>
 
   </div>
 
@@ -5780,6 +6042,10 @@ let arrivals = [], routeStatus = {}, genreEdit = {}, allChannels = [], plexSecti
 let _dirtyChannels = new Set();
 
 let _autoRoute = false;
+
+let _autoRouteChannels = new Set();
+
+let _autoRouteRules = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
@@ -8016,6 +8282,7 @@ function renderChannels() {
           : '';
 
         const needsProc = _dirtyChannels.has(ch.id);
+        const autoOn = _autoRouteChannels.has(ch.id);
         const dirtyBadge = needsProc ? '<span style="position:absolute;top:6px;right:6px;background:var(--acc);color:var(--bg);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;pointer-events:none">⚡ Needs processing</span>' : '';
         return '<div class="chcard" style="position:relative">'
 
@@ -8042,6 +8309,10 @@ function renderChannels() {
           +'</div>'
 
           +'<div class="chcard-actions">'
+
+          +'<button class="btn '+(autoOn?'p':'g')+' sm" onclick="toggleChannelAutoRoute(\''+ch.id+'\','+(!autoOn)+')">'
+          +(autoOn ? '⚡ Auto On' : 'Auto Off')
+          +'</button>'
 
           +'<button class="btn '+(needsProc?'p':'g')+' sm" onclick="openProcModal(\''+ch.id+'\')">&#9881; Process</button>'
 
@@ -8077,11 +8348,13 @@ async function loadChannels(force=false) {
 
   try {
 
-    const [res, dirtyRes] = await Promise.all([
+    const [res, dirtyRes, arRes] = await Promise.all([
 
       fetch('/api/channels'),
 
       fetch('/api/channels/dirty').catch(() => null),
+
+      fetch('/api/channels/auto-route').catch(() => null),
 
     ]);
 
@@ -8094,6 +8367,8 @@ async function loadChannels(force=false) {
     allChannels = data;
 
     if (dirtyRes) { const d = await dirtyRes.json().catch(()=>({})); _dirtyChannels = new Set(Object.keys(d)); }
+
+    if (arRes) { const ar = await arRes.json().catch(()=>({})); _autoRouteChannels = new Set(ar.enabled || []); }
 
     renderChannels();
 
@@ -8983,6 +9258,91 @@ async function importRules(input) {
   await loadRules();
 }
 
+async function loadChannelAutoRoute() {
+  try {
+    const d = await (await fetch('/api/channels/auto-route')).json();
+    _autoRouteChannels = new Set(d.enabled || []);
+  } catch {}
+}
+
+async function toggleChannelAutoRoute(channelId, enabled) {
+  if (enabled) _autoRouteChannels.add(channelId);
+  else _autoRouteChannels.delete(channelId);
+  renderChannels();
+  try {
+    await fetch('/api/channels/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({channel_id: channelId, enabled})
+    });
+  } catch {}
+}
+
+async function enableAllAutoRoute() {
+  _autoRouteChannels = new Set(allChannels.map(c => c.id));
+  renderChannels();
+  try {
+    await fetch('/api/channels/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enable_all: true})
+    });
+    logAction('Auto-route enabled for all channels', true, {action_type:'rule'});
+  } catch {}
+}
+
+async function routeAllNow() {
+  const btn = document.querySelector('[onclick="routeAllNow()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Routing…'; }
+  try {
+    const r = await (await fetch('/api/route/now', {method:'POST'})).json();
+    const msg = r.routed > 0
+      ? `Routed ${r.routed} item${r.routed===1?'':'s'} to ${r.channels} channel${r.channels===1?'':'s'}`
+      : 'Nothing pending to route';
+    logAction(msg, true, {action_type:'route'});
+    toast(msg);
+    if (r.routed > 0) loadChannels();
+  } catch(e) {
+    toast('Route failed');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '⚡ Route All Now'; }
+  }
+}
+
+async function loadRuleAutoRoute() {
+  try {
+    const d = await (await fetch('/api/routing/auto-route')).json();
+    _autoRouteRules = new Set((d.enabled || []).map(String));
+    _renderRulesTable();
+  } catch {}
+}
+
+async function toggleRuleAutoRoute(ruleId, enabled) {
+  if (enabled) _autoRouteRules.add(String(ruleId));
+  else _autoRouteRules.delete(String(ruleId));
+  _renderRulesTable();
+  try {
+    await fetch('/api/routing/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rule_id: ruleId, enabled})
+    });
+  } catch {}
+}
+
+async function enableAllRulesAutoRoute() {
+  _autoRouteRules = new Set(_rulesCache.map(r => String(r.id)));
+  _renderRulesTable();
+  try {
+    await fetch('/api/routing/auto-route', {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enable_all: true})
+    });
+    logAction('Auto-route enabled for all rules', true, {action_type:'rule'});
+  } catch {}
+}
+
 async function loadAutoRouteSetting() {
   try {
     const d = await (await fetch('/api/settings')).json();
@@ -9015,7 +9375,14 @@ async function setAutoRoute(enabled) {
 
 async function loadRules() {
 
-  const rules = await (await fetch('/api/routing')).json();
+  const [rulesRes, arRes] = await Promise.all([
+    fetch('/api/routing'),
+    fetch('/api/routing/auto-route').catch(() => null),
+  ]);
+
+  const rules = await rulesRes.json();
+
+  if (arRes) { const ar = await arRes.json().catch(()=>({})); _autoRouteRules = new Set((ar.enabled || []).map(String)); }
 
   _rulesCache = rules;
 
@@ -9042,7 +9409,7 @@ function _renderRulesTable() {
 
   if (!_rulesCache.length) {
 
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No rules yet. Add one below.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No rules yet. Add one below.</td></tr>';
 
     _updateRulesPP(0, 1);
 
@@ -9107,6 +9474,8 @@ function _renderRulesTable() {
     + '<td style="font-size:13px">' + r.channel_name + '</td>'
 
     + '<td style="text-align:center;color:var(--muted);font-size:13px">' + r.priority + '</td>'
+
+    + '<td style="text-align:center"><button onclick="toggleRuleAutoRoute(' + r.id + ','+(!_autoRouteRules.has(String(r.id)))+')" style="background:none;border:1px solid '+(_autoRouteRules.has(String(r.id))?'var(--acc)':'var(--bdr)')+';color:'+(_autoRouteRules.has(String(r.id))?'var(--acc)':'var(--muted)')+';padding:2px 7px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap" title="Toggle auto-route for this rule">'+ (_autoRouteRules.has(String(r.id)) ? '⚡ On' : 'Off') +'</button></td>'
 
     + '<td style="white-space:nowrap"><button class="edit-btn" onclick="openEditRule(' + r.id + ')" style="margin-right:4px;background:none;border:1px solid var(--bdr);color:var(--txt);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px">&#x270E;</button>'
 
