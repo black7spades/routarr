@@ -375,13 +375,9 @@ _LOGIN_CSS = (
 
 
 
-def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
-
-    idents = idents or []
+def _login_page(error: str = '') -> HTMLResponse:
 
     e = '<div class="lerr">' + error + '</div>' if error else ''
-
-    idents_js = '[' + ','.join('"' + u.replace('\\', '\\\\').replace('"', '\\"') + '"' for u in idents) + ']'
 
     html = (
 
@@ -422,26 +418,29 @@ def _login_page(error: str = '', idents: list = None) -> HTMLResponse:
 
         '<script>'
 
-        'const _ids=' + idents_js + ';'
-
-        'console.log("[Routarr] login idents:",_ids.length,_ids);'
-
-        '(function(){'
-        'if(!_ids.length){console.warn("[Routarr] no idents — background will be black");return;}'
-        'const _L=[document.getElementById("bg0"),document.getElementById("bg1")];'
-        'let _a=0,_i=Math.floor(Math.random()*_ids.length);'
+        # Ken Burns: fetch idents client-side so the page renders instantly,
+        # then images fade in async (no blocking Tunarr call on page load).
+        '(async function(){'
+        'const L=[document.getElementById("bg0"),document.getElementById("bg1")];'
+        'let a=0,i=0,ids=[];'
         'function _show(li,url){'
-        'const l=_L[li];l.style.backgroundImage="url("+url+")";'
+        'const l=L[li];'
+        'l.style.backgroundImage="url("+url+")";'
         'l.style.animation="none";void l.offsetWidth;l.style.animation="";'
         'l.classList.add("on");}'
         'function _next(){'
-        '_i=(_i+1)%_ids.length;'
-        'const n=1-_a;_show(n,_ids[_i]);_L[_a].classList.remove("on");_a=n;}'
-        '_show(0,_ids[_i]);'
-        'setInterval(_next,8000);'
+        'if(!ids.length)return;'
+        'i=(i+1)%ids.length;'
+        'const n=1-a;_show(n,ids[i]);L[a].classList.remove("on");a=n;}'
+        'try{'
+        'const r=await fetch("/api/channel-idents");'
+        'const data=await r.json();'
+        'ids=data.filter(ch=>ch.ident).map(ch=>"/api/proxy-image?url="+encodeURIComponent(ch.ident));'
+        'if(ids.length){i=Math.floor(Math.random()*ids.length);_show(0,ids[i]);setInterval(_next,8000);}'
+        '}catch(ex){console.warn("[Routarr] ident load failed:",ex);}'
         '})()'
 
-        'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'  
+        'async function _li(e){e.preventDefault();const u=document.getElementById("lu").value,p=document.getElementById("lp").value,ed=document.getElementById("lerrdyn");try{const r=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});const d=await r.json();if(d.ok){window.location=d.redirect||"/";return;}ed.textContent=d.error||"Sign in failed";ed.style.display="block";}catch(ex){ed.textContent="Request failed";ed.style.display="block";}}'
 
         '</script>'
 
@@ -2681,6 +2680,10 @@ async def get_channel_idents():
 
                         ident = (ch.get("offline") or {}).get("picture", "")
 
+                        if not ident:
+                            icon = ch.get("icon", {})
+                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
+
                         if ident and "ChatGPT" not in ident:
 
                             out.append({"id": ch.get("id"), "name": ch.get("name"), "ident": _tunarr_img(ident, tunarr)})
@@ -2727,52 +2730,7 @@ async def proxy_image(url: str):
 
 async def get_login():
 
-    idents = []
-
-    try:
-
-        tunarr = cfg("tunarr_url")
-
-        if tunarr:
-
-            async with httpx.AsyncClient(timeout=5) as c:
-
-                r = await c.get(f"{tunarr}/api/channels")
-
-                if r.status_code == 200:
-
-                    for ch in r.json():
-
-                        try:
-
-                            num = int(ch.get("number", 0))
-
-                        except Exception:
-
-                            num = 0
-
-                        if num >= 1069 or num in (69, 96, 97):
-
-                            continue
-
-                        ident = (ch.get("offline") or {}).get("picture", "")
-
-                        if not ident:
-                            # Fallback to channel icon when no offline screensaver is set
-                            icon = ch.get("icon", {})
-                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
-
-                        if ident and "ChatGPT" not in ident:
-
-                            ident = _tunarr_img(ident, tunarr)
-
-                            idents.append("/api/proxy-image?url=" + urllib.parse.quote(ident, safe=""))
-
-    except Exception as _ex:
-
-        logger.warning("get_login ident fetch failed: %s", _ex)
-
-    return _login_page(idents=idents)
+    return _login_page()
 
 
 
