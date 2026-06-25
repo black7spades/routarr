@@ -4932,6 +4932,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab"     onclick="show('rules',this)">Rules</button>
 
+    <button class="tab"     onclick="show('flows',this)">Flows</button>
+
     <button class="tab"     onclick="show('channels',this)">Channels</button>
 
     <button class="tab"     onclick="show('activity',this);loadActivityLog();loadChangelog()">Log</button>
@@ -4990,7 +4992,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <span><strong>Almost there!</strong> Connect Plex and Tunarr in
 
-      <button class="btn g sm" onclick="show('settings',document.querySelectorAll('.tab')[3])">Settings</button>
+      <button class="btn g sm" onclick="show('settings',document.querySelector('.tab[onclick*="settings"]'))">Settings</button>
 
       to start routing content.</span>
 
@@ -5230,6 +5232,44 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 
+<!-- FLOWS -->
+
+<div id="page-flows" class="page">
+
+  <div class="sh">
+
+    <div style="flex:1">
+
+      <h2>Auto Flows</h2>
+
+      <div class="sub">Content matching these flows is routed automatically on every scan. Toggle any flow to enable or disable it.</div>
+
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap">
+
+      <span id="flow-global-ind" style="display:none;background:var(--acc);color:var(--bg);border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700">&#x26a1; All rules</span>
+
+      <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--txt);cursor:pointer;user-select:none;white-space:nowrap">
+
+        <input type="checkbox" id="flow-global-chk" style="accent-color:var(--acc);cursor:pointer;width:14px;height:14px" onchange="setAutoRoute(this.checked)">
+
+        Route all rules
+
+      </label>
+
+      <button class="btn p sm" onclick="routeAllNow()" title="Immediately route all pending items to their matched channels">⚡ Run All Now</button>
+
+    </div>
+
+  </div>
+
+  <div id="flows-body"><div class="loading">Loading…</div></div>
+
+</div>
+
+
+
 <!-- CHANNELS -->
 
 <div id="page-channels" class="page">
@@ -5241,8 +5281,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="btn g sm" onclick="loadChannels(true)">Refresh</button>
 
     <button class="btn g sm" id="proc-all-btn" onclick="processAll()" title="Apply last-used process settings to every channel">Process All</button>
-
-    <button class="btn p sm" onclick="routeAllNow()" title="Route all pending items to their matched channels right now">⚡ Route All Now</button>
 
     <button class="btn g sm" onclick="enableAllAutoRoute()" title="Enable auto-route for every channel">Enable All Auto</button>
 
@@ -6999,6 +7037,8 @@ function show(name, btn) {
   if (name==='arrivals' && !arrivals.length) loadArrivals();
 
   if (name==='channels')  { loadChannels(); loadHealthLog(); }
+
+  if (name==='flows')     { loadFlows(); }
 
   if (name==='rules')     { loadRules(); loadAutoRouteSetting(); }
 
@@ -9327,6 +9367,99 @@ async function importRules(input) {
   await loadRules();
 }
 
+async function loadFlows() {
+  const el = document.getElementById('flows-body');
+  if (el) el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes] = await Promise.all([
+      fetch('/api/routing').catch(()=>null),
+      fetch('/api/routing/auto-route').catch(()=>null),
+      fetch('/api/channels').catch(()=>null),
+      fetch('/api/channels/auto-route').catch(()=>null),
+      fetch('/api/settings').catch(()=>null),
+    ]);
+    if (rulesRes) { const d = await rulesRes.json().catch(()=>[]); if (Array.isArray(d)) _rulesCache = d; }
+    if (ruleArRes) { const d = await ruleArRes.json().catch(()=>({})); _autoRouteRules = new Set((d.enabled||[]).map(String)); }
+    if (chRes) { const d = await chRes.json().catch(()=>[]); if (Array.isArray(d)) allChannels = d; }
+    if (chArRes) { const d = await chArRes.json().catch(()=>({})); _autoRouteChannels = new Set(d.enabled||[]); }
+    if (settingsRes) { const d = await settingsRes.json().catch(()=>({})); _autoRoute = (d.auto_route==='1'); updateAutoRouteUI(); }
+  } catch(e) {}
+  renderFlows();
+}
+
+function _flowRuleCard(r, active) {
+  const srcLabel = r.source==='jellyfin' ? 'JF' : 'PX';
+  const srcColor = r.source==='jellyfin' ? '#a855f7' : 'var(--acc)';
+  const sectionPart = r.section_id==='*'
+    ? '<span style="color:var(--muted);font-size:12px">any library</span>'
+    : '<span style="font-size:12px">'+escHtml(r.section_id)+'</span>';
+  const labelPart = r.label
+    ? r.label.split(',').map(g=>'<span class="pill">'+escHtml(g.trim())+'</span>').join(' ')
+    : '<span style="color:var(--muted);font-size:12px">any genre</span>';
+  const border = active ? 'border-left:3px solid var(--acc)' : 'border-left:3px solid var(--bdr);opacity:.65';
+  const btnStyle = active
+    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
+  return '<div class="scard" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;'+border+'">'
+    +'<span style="font-size:10px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:4px;padding:2px 6px;flex-shrink:0">'+srcLabel+'</span>'
+    +'<div style="flex:1;min-width:160px">'
+    +'<div style="font-weight:600;font-size:13px">'+escHtml(r.name)+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:3px">'+sectionPart+' &nbsp;→&nbsp; '+labelPart+' &nbsp;→&nbsp; <strong style="color:var(--txt)">'+escHtml(r.channel_name)+'</strong></div>'
+    +'</div>'
+    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'</div>';
+}
+
+function _flowChannelCard(ch, active) {
+  const border = active ? 'border-left:3px solid var(--acc)' : 'border-left:3px solid var(--bdr);opacity:.65';
+  const btnStyle = active
+    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
+  return '<div class="scard" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;'+border+'">'
+    +'<span style="font-size:10px;font-weight:700;color:var(--muted);background:var(--s3);border-radius:4px;padding:2px 6px;flex-shrink:0">CH</span>'
+    +'<div style="flex:1;min-width:160px">'
+    +'<div style="font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:3px">Any new content matched to this channel → auto-route</div>'
+    +'</div>'
+    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'</div>';
+}
+
+function renderFlows() {
+  const el = document.getElementById('flows-body');
+  if (!el) return;
+
+  const activeRules = _rulesCache.filter(r => _autoRouteRules.has(String(r.id)));
+  const inactiveRules = _rulesCache.filter(r => !_autoRouteRules.has(String(r.id)));
+  const activeCh = allChannels.filter(c => _autoRouteChannels.has(c.id));
+  const inactiveCh = allChannels.filter(c => !_autoRouteChannels.has(c.id));
+
+  if (!_rulesCache.length && !allChannels.length) {
+    el.innerHTML = '<div class="empty">No rules or channels configured yet. Add rules on the Rules page to get started.</div>';
+    return;
+  }
+
+  let html = '';
+
+  if (activeRules.length || activeCh.length) {
+    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0">Active flows</h3><div class="sub">Running automatically on every scan</div></div></div>';
+    html += '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:28px">';
+    activeRules.forEach(r => { html += _flowRuleCard(r, true); });
+    activeCh.forEach(c => { html += _flowChannelCard(c, true); });
+    html += '</div>';
+  }
+
+  if (inactiveRules.length || inactiveCh.length) {
+    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Enable to add to auto flows</div></div></div>';
+    html += '<div style="display:flex;flex-direction:column;gap:8px">';
+    inactiveRules.forEach(r => { html += _flowRuleCard(r, false); });
+    inactiveCh.forEach(c => { html += _flowChannelCard(c, false); });
+    html += '</div>';
+  }
+
+  el.innerHTML = html || '<div class="empty">No rules or channels yet.</div>';
+}
+
 async function loadChannelAutoRoute() {
   try {
     const d = await (await fetch('/api/channels/auto-route')).json();
@@ -9338,6 +9471,7 @@ async function toggleChannelAutoRoute(channelId, enabled) {
   if (enabled) _autoRouteChannels.add(channelId);
   else _autoRouteChannels.delete(channelId);
   renderChannels();
+  if (document.getElementById('page-flows')?.classList.contains('on')) renderFlows();
   try {
     await fetch('/api/channels/auto-route', {
       method: 'PUT',
@@ -9390,6 +9524,7 @@ async function toggleRuleAutoRoute(ruleId, enabled) {
   if (enabled) _autoRouteRules.add(String(ruleId));
   else _autoRouteRules.delete(String(ruleId));
   _renderRulesTable();
+  if (document.getElementById('page-flows')?.classList.contains('on')) renderFlows();
   try {
     await fetch('/api/routing/auto-route', {
       method: 'PUT',
@@ -9425,6 +9560,10 @@ function updateAutoRouteUI() {
   const ind = document.getElementById('auto-route-ind');
   if (chk) chk.checked = _autoRoute;
   if (ind) ind.style.display = _autoRoute ? '' : 'none';
+  const fchk = document.getElementById('flow-global-chk');
+  const find = document.getElementById('flow-global-ind');
+  if (fchk) fchk.checked = _autoRoute;
+  if (find) find.style.display = _autoRoute ? '' : 'none';
 }
 
 async function setAutoRoute(enabled) {
