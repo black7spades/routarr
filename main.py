@@ -5227,6 +5227,16 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 }
 
+#c64ld{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:44px 20px;min-height:320px;width:100%;overflow:hidden}
+.c64rs{width:100%;overflow:hidden}
+.c64rb{height:4px;width:100%;animation:c64rb 2s linear infinite}
+@keyframes c64rb{0%{clip-path:inset(0 100% 0 0)}45%{clip-path:inset(0 0 0 0)}55%{clip-path:inset(0 0 0 0)}100%{clip-path:inset(0 0 0 100%)}}
+.c64mid{display:flex;align-items:center;gap:14px}
+#c64sp{font-size:26px;color:#6abfc6;min-width:1em;text-align:center}
+.c64sl{font-family:monospace;font-size:13px;font-weight:700;letter-spacing:3px;color:#c9d487;text-transform:uppercase}
+.c64qw{min-height:40px;display:flex;align-items:center;justify-content:center;max-width:680px;text-align:center;padding:0 20px}
+.c64q{font-family:monospace;font-size:13px;letter-spacing:1.5px;font-weight:600;text-transform:uppercase;transition:opacity .4s ease;text-align:center}
+
 </style>
 
 </head>
@@ -6348,6 +6358,8 @@ let _preloadedImages = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
+let _c64Timer = null, _c64SpinTimer = null;
+
 let _plexUrl = '', _plexMachineId = '', _plexPublicUrl = '';
 let _jfUrl = '', _jfPublicUrl = '', _jfServerId = '';
 
@@ -7439,7 +7451,7 @@ async function loadArrivals(force=false) {
 
   arrPage = 0;
 
-  document.getElementById('arr-body').innerHTML = '<div class="loading">Loading&hellip;</div>';
+  showC64();
 
   const days = document.getElementById('dsel').value;
 
@@ -7509,11 +7521,99 @@ function sortArrivals(col) {
 
 
 
+const _C64Q=["THERE IS NO ROUTARR ONLY ZUUL","TAKING AN ROUTARR TO THE KNEE","I COULD'VE BEEN FASTER IN ROUTARR","APPLY DIRECTLY TO THE ROUTARR","DON'T FORGET TO REWIND YOUR ROUTARR","IN SPACE NO ONE CAN HEAR YOU ROUTARR","THAT'S NO MOON, THAT'S A SPACE ROUTARR","WHERE WE'RE GOING WE DON'T NEED ROUTARR","DEAD OR ALIVE, YOU'RE ROUTARR WITH ME","HAVE YOU EVER DANCED WITH THE ROUTARR IN THE PALE MOONLIGHT","ROUTARR OR ROUTARR NOT. THERE IS NO TRY","IF IT BLEEDS, WE CAN ROUTARR IT","I HAVE COME HERE TO CHEW ROUTARR AND KICK ASS","SAY HELLO TO MY LITTLE ROUTARR","MY MAMA ALWAYS SAID LIFE WAS LIKE A BOX OF ROUTARR","YOUR SCIENTISTS WERE SO PREOCCUPIED WITH WHETHER THEY COULD ROUTARR","THAT ROUTARR REALLY TIED THE ROOM TOGETHER","I ATE HIS LIVER WITH SOME ROUTARR BEANS AND A NICE CHIANTI","ONE DOES NOT SIMPLY WALK INTO ROUTARR","THE FIRST RULE OF ROUTARR IS YOU DO NOT TALK ABOUT ROUTARR","THAT'S MY SECRET CAPTAIN, I'M ALWAYS ROUTARR","THEY'RE TAKING THE HOBBITS TO ROUTARRGARD","I'M GONNA ROUTARR THE SHIT OUT OF THIS","NOW YOU'RE IN THE ROUTARR PLACE","THEY WON'T FEAR IT UNTIL THEY ROUTARR IT","YOU'RE GONNA NEED A BIGGER ROUTARR","I LOVE THE SMELL OF ROUTARR IN THE MORNING"];
+
+const _C64C=['#6abfc6','#c9d487','#887ecb','#9ae29b','#cb7e75','#ffffff','#706deb','#9f4e44','#c9d487','#6abfc6'];
+
+function _c64Html(){
+
+  const rc=['#9f4e44','#cb7e75','#c9d487','#5cab5e','#6abfc6','#887ecb','#706deb','#ffffff','#706deb','#887ecb','#6abfc6','#5cab5e','#c9d487','#cb7e75','#9f4e44'];
+
+  const bars=rc.map((c,i)=>'<div class="c64rb" style="background:'+c+';animation-delay:'+(i*0.09).toFixed(2)+'s"></div>').join('');
+
+  const strip='<div class="c64rs">'+bars+'</div>';
+
+  return '<div id="c64ld">'+strip+'<div class="c64mid"><span id="c64sp">◐</span><span class="c64sl">SCANNING LIBRARY…</span></div><div class="c64qw"><div class="c64q" id="c64q" style="opacity:0"></div></div>'+strip+'</div>';
+
+}
+
+
+
+function showC64(){
+
+  stopC64();
+
+  document.getElementById('arr-body').innerHTML=_c64Html();
+
+  let qi=Math.floor(Math.random()*_C64Q.length),ci=0;
+
+  function next(){
+
+    const q=document.getElementById('c64q');
+
+    if(!q){clearInterval(_c64Timer);return;}
+
+    q.style.opacity='0';
+
+    setTimeout(()=>{
+
+      const q2=document.getElementById('c64q');
+
+      if(!q2)return;
+
+      qi=(qi+1)%_C64Q.length;
+
+      ci=(ci+1)%_C64C.length;
+
+      q2.textContent=_C64Q[qi];
+
+      q2.style.color=_C64C[ci];
+
+      q2.style.opacity='1';
+
+    },500);
+
+  }
+
+  next();
+
+  _c64Timer=setInterval(next,3500);
+
+  const sc=['◐','◓','◑','◒'];
+
+  let si=0;
+
+  _c64SpinTimer=setInterval(()=>{
+
+    const sp=document.getElementById('c64sp');
+
+    if(!sp){clearInterval(_c64SpinTimer);return;}
+
+    si=(si+1)%sc.length;sp.textContent=sc[si];
+
+  },150);
+
+}
+
+
+
+function stopC64(){
+
+  if(_c64Timer){clearInterval(_c64Timer);_c64Timer=null;}
+
+  if(_c64SpinTimer){clearInterval(_c64SpinTimer);_c64SpinTimer=null;}
+
+}
+
+
+
 function renderArrivals() {
+
+  stopC64();
 
   if (!arrivals.length) {
 
-    document.getElementById('arr-body').innerHTML = '<div class="empty">No new content in this window.</div>';
+    showC64();
 
     return;
 
