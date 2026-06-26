@@ -5087,6 +5087,18 @@ tr:last-child td{border-bottom:none}tr:hover td{background:rgba(255,255,255,.02)
 .help-box.on{display:block}
 
 .help-box code{background:var(--s3);padding:1px 5px;border-radius:3px;font-family:monospace;font-size:11px}
+.help-mockup{background:var(--s2);border:1px solid var(--bdr);border-radius:8px;padding:14px 16px;margin:14px 0 6px}
+.help-mockup .hm-tag{display:inline-block;background:var(--s3);border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.help-mockup .hm-row{display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--bdr);font-size:12px;flex-wrap:wrap}
+.help-mockup .hm-row:last-child{border-bottom:none}
+.help-mockup .hm-lbl{min-width:160px;color:var(--muted)}
+.help-mockup .hm-val{flex:1;min-width:120px;background:var(--s3);border-radius:3px;padding:2px 8px;color:var(--txt);font-family:monospace;font-size:11px}
+.help-mockup .hm-note{color:var(--acc);font-size:11px}
+.hstep{display:flex;gap:10px;align-items:flex-start;padding:7px 0}
+.hstep-n{background:var(--acc);color:var(--bg);border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;margin-top:2px}
+.hstep-b{flex:1;font-size:13px;line-height:1.6}
+.hstep-b ul{margin:5px 0 0 18px;line-height:2.1}
+.htip{background:var(--s2);border-left:3px solid var(--blue);border-radius:0 6px 6px 0;padding:10px 14px;margin:12px 0;font-size:12px;line-height:1.6}
 
 /* Lib mapping */
 
@@ -5278,6 +5290,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="tab" data-page="activity" onclick="show('activity',this);loadActivityLog()">Log</button>
 
     <button class="tab" data-page="settings" onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
+
+    <button class="tab" data-page="help" onclick="show('help',this)">Help</button>
 
   </nav>
 
@@ -6119,6 +6133,331 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 </div><!-- /settings -->
+
+
+
+<!-- HELP -->
+
+<div id="page-help" class="page">
+
+  <div class="sh">
+    <div>
+      <h2>Setup Guide</h2>
+      <div class="sub">Everything you need to get Routarr running and routing content automatically.</div>
+    </div>
+    <button class="btn g" onclick="startTour()" style="flex-shrink:0">&#9432; Interactive Tour</button>
+  </div>
+
+  <!-- How it works -->
+  <div class="scard">
+    <h3>How Routarr works</h3>
+    <p style="font-size:13px;line-height:1.7">Routarr sits between your <strong>Plex</strong> (or <strong>Jellyfin</strong>) media server and <strong>Tunarr</strong>, your channel scheduling service. On each scan it fetches recently-added items, runs them through your <strong>routing rules</strong>, and adds matched items to the correct Tunarr channel automatically.</p>
+    <p style="margin-top:8px;font-size:13px;line-height:1.7">Items that don't match any rule appear in the <strong>Media</strong> tab so you can route them manually, edit their genres, or mark them as skipped.</p>
+    <div class="htip" style="margin-top:14px"><strong>First run:</strong> The very first scan always checks your <em>entire</em> library history so nothing gets missed on initial setup. Subsequent scans use only the configured look-back window (default: 14 days).</div>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Step 1 &mdash; Connect your services</h3>
+    <p class="sdesc">Open <strong>Settings</strong> in the top nav. This is where you tell Routarr how to reach Plex, Tunarr, and optionally Jellyfin.</p>
+
+    <div class="help-mockup">
+      <div class="hm-tag">Settings &rarr; Connections</div>
+      <div class="hm-row">
+        <span class="hm-lbl">Plex address</span>
+        <span class="hm-val">http://192.168.1.x:32400</span>
+        <span class="hm-note">&#8592; your Plex server; port is almost always 32400</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Plex token</span>
+        <span class="hm-val">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span>
+        <span class="hm-note">&#8592; click the &#9432; link below the field for instructions</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Tunarr address</span>
+        <span class="hm-val">http://192.168.1.x:8000</span>
+        <span class="hm-note">&#8592; your Tunarr server; port is usually 8000</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Plex source ID</span>
+        <span class="hm-val">auto-detected</span>
+        <span class="hm-note">&#8592; click Detect after entering your Tunarr URL</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Scan interval</span>
+        <span class="hm-val">60</span>
+        <span class="hm-note">&#8592; minutes between auto-scans; leave blank to disable</span>
+      </div>
+    </div>
+
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Under <strong>Connections &rarr; Sources</strong>, enter your <strong>Plex address</strong> (e.g. <code>http://192.168.1.50:32400</code>) and <strong>Plex token</strong>. The &#9432; link below the token field walks you through finding your token in the browser console.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b">Under <strong>Service</strong>, enter your <strong>Tunarr address</strong>, then click <strong>Detect</strong> next to Plex source ID. It auto-fills once Tunarr is reachable.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">3</div>
+      <div class="hstep-b">Set a <strong>Plex scan interval</strong> in minutes. This controls how often Routarr automatically checks Plex for new content. Leave it blank to disable automatic scanning.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">4</div>
+      <div class="hstep-b">Click <strong>Save connections</strong>, then click <strong>Test connections</strong> to verify everything is reachable before moving on.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">5</div>
+      <div class="hstep-b"><em>Jellyfin (optional):</em> fill in the Jellyfin address and API key under Sources. Find the API key in Jellyfin at Dashboard &rarr; Administration &rarr; API Keys &rarr; + New API Key.</div>
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Step 2 &mdash; Map your libraries</h3>
+    <p class="sdesc">Still in Settings, scroll down to <strong>Library Mapping</strong>. This links each of your Plex/Jellyfin libraries to the corresponding Tunarr library. Without this, routing won't work.</p>
+
+    <div class="help-mockup">
+      <div class="hm-tag">Settings &rarr; Library Mapping</div>
+      <div class="hm-row">
+        <span class="hm-lbl">Movies</span>
+        <span class="hm-val">Movies [Plex]</span>
+        <span class="hm-note">&#8592; select the matching Tunarr library from the dropdown</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">TV Shows</span>
+        <span class="hm-val">TV Shows [Plex]</span>
+        <span class="hm-note">&#8592; select the matching Tunarr library from the dropdown</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Music Videos</span>
+        <span class="hm-val">Skip</span>
+        <span class="hm-note">&#8592; Skip = this library is never scanned or routed</span>
+      </div>
+    </div>
+
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Click <strong>Auto-configure from Tunarr</strong> to automatically match libraries by name. Review the results &mdash; Tunarr can have multiple libraries with similar names.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b">For each library row, use the left dropdown to pick the matching Tunarr library. If a Plex/Jellyfin library has no Tunarr counterpart, leave it unmapped.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">3</div>
+      <div class="hstep-b">Use the <strong>Scan Priority</strong> dropdown on each row to control scanning:
+        <ul>
+          <li><strong>Priority</strong> &mdash; scanned and rule-matched first</li>
+          <li><strong>Normal</strong> &mdash; standard behaviour (default)</li>
+          <li><strong>Skip</strong> &mdash; never scanned, never routed. Use this for Music, Podcasts, Audiobooks, or any library you want Routarr to completely ignore.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">4</div>
+      <div class="hstep-b">Click <strong>Save mapping</strong>.</div>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Step 3 &mdash; Create routing rules</h3>
+    <p class="sdesc">Open the <strong>Rules</strong> tab in the top nav. Rules decide which Tunarr channel new content goes to. Routarr evaluates them highest-priority-first; the first match wins.</p>
+
+    <div class="help-mockup">
+      <div class="hm-tag">Rules &rarr; Add Rule dialog</div>
+      <div class="hm-row">
+        <span class="hm-lbl">Name</span>
+        <span class="hm-val">Sci-Fi Movies</span>
+        <span class="hm-note">&#8592; a label so you can identify the rule later</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Source</span>
+        <span class="hm-val">Plex</span>
+        <span class="hm-note">&#8592; Plex or Jellyfin</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Library</span>
+        <span class="hm-val">Movies</span>
+        <span class="hm-note">&#8592; only items from this library are matched</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Genres (all must match)</span>
+        <span class="hm-val">Science Fiction</span>
+        <span class="hm-note">&#8592; leave blank to match every item in the library</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Exclude genres</span>
+        <span class="hm-val">Documentary</span>
+        <span class="hm-note">&#8592; items tagged with these genres won't match</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Title contains</span>
+        <span class="hm-val">Star Wars</span>
+        <span class="hm-note">&#8592; optional keyword filter on the item title</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Plays on</span>
+        <span class="hm-val">CH 4 &mdash; Sci-Fi Channel</span>
+        <span class="hm-note">&#8592; which Tunarr channel this rule routes to</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Priority</span>
+        <span class="hm-val">200</span>
+        <span class="hm-note">&#8592; higher number = evaluated first</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Auto-route</span>
+        <span class="hm-val">&#9745; enabled</span>
+        <span class="hm-note">&#8592; route automatically on each scan</span>
+      </div>
+    </div>
+
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Click <strong>+ Add rule</strong>. Give it a name, pick the source (Plex or Jellyfin), and choose a library.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b"><strong>Genres use AND logic:</strong> every genre you add must be present on the item for it to match. Adding &ldquo;Science Fiction&rdquo; and &ldquo;Action&rdquo; will only match items tagged with <em>both</em>. Leave genres blank to match everything in the library.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">3</div>
+      <div class="hstep-b"><strong>Exclude genres</strong> lets you carve out sub-genres from a broad rule. For example: a &ldquo;Drama&rdquo; rule with &ldquo;Documentary&rdquo; excluded won't accidentally catch documentary films that are also tagged Drama.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">4</div>
+      <div class="hstep-b"><strong>Title match / Exclude title</strong> are optional keyword filters on the item title. Use them to catch specific franchises (&ldquo;Star Wars&rdquo;) or series regardless of genre tags, or to exclude them from a broader rule.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">5</div>
+      <div class="hstep-b">Pick the <strong>Tunarr channel</strong> and set a <strong>priority</strong>. Use low numbers (e.g. 10) for broad catch-all rules and high numbers (e.g. 200+) for specific overrides so they get evaluated first.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">6</div>
+      <div class="hstep-b">Tick <strong>Auto-route</strong> on the rule &mdash; or use the global Auto-route toggle on the Rules page &mdash; to have Routarr apply the rule automatically on every scan without any manual action.</div>
+    </div>
+    <div class="htip"><strong>Rule strategy:</strong> start with a broad catch-all rule at priority 10 (e.g. &ldquo;All Movies &rarr; Movies Channel&rdquo;), then add specific rules at priority 100+ to override for particular genres or franchises.</div>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Step 4 &mdash; Route media</h3>
+    <p class="sdesc">The <strong>Media</strong> tab shows everything Routarr has found in Plex/Jellyfin. Items are either auto-routed (if auto-route is on) or waiting here for manual action.</p>
+
+    <div class="help-mockup">
+      <div class="hm-tag">Media tab &mdash; top controls</div>
+      <div class="hm-row">
+        <span class="hm-lbl">Check Plex Now</span>
+        <span class="hm-val">button</span>
+        <span class="hm-note">&#8592; trigger an immediate scan right now</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Route All</span>
+        <span class="hm-val">button</span>
+        <span class="hm-note">&#8592; run all visible items through rules in one shot</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Time window</span>
+        <span class="hm-val">Last 14 days</span>
+        <span class="hm-note">&#8592; controls how far back the list reaches</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Filter bar</span>
+        <span class="hm-val">Title / Genre / Channel</span>
+        <span class="hm-note">&#8592; narrow the list; toggle Plex/Jellyfin sources</span>
+      </div>
+    </div>
+
+    <div class="help-mockup" style="margin-top:0">
+      <div class="hm-tag">Media tab &mdash; action bar (appears when items are ticked)</div>
+      <div class="hm-row">
+        <span class="hm-lbl">Route to channel &rarr;</span>
+        <span class="hm-val">CH 3 &mdash; Movies</span>
+        <span class="hm-note">&#8592; pick a channel then click Route to Channel</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Add Genre</span>
+        <span class="hm-val">Horror</span>
+        <span class="hm-note">&#8592; add a genre to selected items before routing</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Actions &rarr; Skip</span>
+        <span class="hm-val">&#8960; Skip</span>
+        <span class="hm-note">&#8592; mark items so they are never routed</span>
+      </div>
+      <div class="hm-row">
+        <span class="hm-lbl">Actions &rarr; Clear</span>
+        <span class="hm-val">&#10005; Clear</span>
+        <span class="hm-note">&#8592; reset the routing association on selected items</span>
+      </div>
+    </div>
+
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Click <strong>Check Plex Now</strong> to trigger a scan. A C64-style animation plays while scanning. New items appear in the list as they are found. Items showing a channel name have a matching rule &mdash; items labelled &ldquo;no rule&rdquo; need a rule created first.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b">Click <strong>Route All</strong> to run every item in the current window through your routing rules at once. Only items that match a rule get routed; unmatched items remain in the list.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">3</div>
+      <div class="hstep-b">To route specific items manually: tick their checkboxes, then use the <strong>action bar</strong> at the bottom. Pick a channel from the dropdown and click <strong>Route to Channel</strong>.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">4</div>
+      <div class="hstep-b">Before routing, you can use <strong>Add Genre</strong> in the action bar to add a genre tag to selected items. This is useful when an item has missing or incorrect genre data and doesn't match the rule you expect.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">5</div>
+      <div class="hstep-b">Use the filter bar to narrow the list: search by title, genre, or channel; show only &ldquo;Has a rule&rdquo; / &ldquo;No rule&rdquo;; toggle Plex/Jellyfin sources; enable &ldquo;Show already routed&rdquo; to review everything including what has already been sent.</div>
+    </div>
+    <div class="htip"><strong>Auto-routing:</strong> With Auto-route enabled on your rules, Routarr routes matching items automatically on each scheduled scan. You only need to open the Media tab to handle exceptions &mdash; items with no matching rule, or ones where the automatic routing picked the wrong channel.</div>
+  </div>
+
+  <!-- Channels -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Channels tab</h3>
+    <p class="sdesc">Shows all Tunarr channels Routarr knows about. Use the health log to see the last response from each channel and diagnose connectivity issues.</p>
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Channels are read directly from Tunarr. If a channel is missing here, verify it exists in Tunarr and that the Tunarr connection is working (Settings &rarr; Test connections).</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b">You can designate a channel as a <strong>filler destination</strong> from this tab. Items routed to a filler-configured channel are appended to the associated Tunarr filler list rather than the main channel programming.</div>
+    </div>
+  </div>
+
+  <!-- Flows -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Flows <span style="font-weight:400;font-size:12px;color:var(--muted)">(advanced)</span></h3>
+    <p class="sdesc">Flows are multi-step automated pipelines. Use them when standard rules aren't expressive enough &mdash; for example, applying multiple filters in sequence or chaining transformations before routing.</p>
+    <div class="hstep">
+      <div class="hstep-n">1</div>
+      <div class="hstep-b">Go to the <strong>Flows</strong> tab and click <strong>+ New flow</strong>.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">2</div>
+      <div class="hstep-b">Add steps: each step can filter items, transform metadata, or route to a channel. Steps run in order &mdash; a filter step narrows the working set before the next step sees it.</div>
+    </div>
+    <div class="hstep">
+      <div class="hstep-n">3</div>
+      <div class="hstep-b">Run a flow manually from the Flows tab, or enable auto-run in the flow settings to have it execute on each scan alongside your normal routing rules.</div>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="scard" style="margin-top:20px">
+    <h3>Log tab</h3>
+    <p class="sdesc">A complete history of every scan, route, skip, error, and auto-route result. When something seems wrong, check here first.</p>
+    <div class="htip">Error messages in the Log tab nearly always point directly to the cause: a bad URL, a missing library mapping, a Tunarr API rejection, or a scan that was skipped because one is already in progress.</div>
+    <div style="margin-top:10px;font-size:13px;line-height:1.7">Each log entry shows a timestamp, the action type (scan, route, skip, error), and the full message. Use this to verify that auto-routing is firing on schedule and that items are landing on the correct channels.</div>
+  </div>
+
+</div>
 
 
 
@@ -11070,49 +11409,85 @@ const TOUR = [
 
   {title:'Welcome to Routarr!',
 
-   body:'This tour takes about a minute and covers the three essentials: connecting your services, creating routing rules, and manually routing media.',
+   body:'This short tour covers the four setup steps: connect your services, map libraries, create routing rules, and route media. Open the <strong>Help</strong> tab any time for the full written guide with annotated diagrams.',
 
    target:null, action:null},
 
   {title:'1. Open Settings',
 
-   body:'Click <strong>Settings</strong> to start. You\'ll need to enter your Plex and Tunarr connection details before anything else will work.',
+   body:'Click <strong>Settings</strong> in the top nav. All your service connection details live here.',
 
    target:'button.tab[onclick*="settings"]', action:()=>_tourNav('settings')},
 
-  {title:'2. Enter connection details',
+  {title:'2. Enter your Plex address',
 
-   body:'Fill in your <strong>Plex URL</strong>, <strong>Plex token</strong>, and <strong>Tunarr URL</strong> in the Connections section, then click <strong>Save connections</strong>.',
+   body:'Type the address of your Plex server &mdash; usually <code>http://192.168.1.x:32400</code>. This is what Routarr uses to scan your library for new content.',
 
    target:'#s-plex_url', action:null},
 
-  {title:'3. Map your libraries',
+  {title:'3. Add your Plex token',
 
-   body:'In <strong>Settings → Libraries</strong>, map each Plex/Jellyfin library to its Tunarr counterpart. Set <strong>Scan Priority</strong> on each — mark libraries you never want routed as <strong>Skip</strong> to exclude them from all scans.',
+   body:'Your Plex token authenticates Routarr with Plex. Click the <strong>&#9432; How to find your Plex token</strong> link just below this field for step-by-step browser console instructions.',
 
-   target:'button.tab[onclick*="settings"]', action:()=>_tourNav('settings')},
+   target:'#s-plex_token', action:null},
 
-  {title:'4. Create a routing rule',
+  {title:'4. Enter your Tunarr address',
 
-   body:'Switch to the <strong>Rules</strong> tab. Rules decide where new Plex content is sent — you match by library and genre, and choose a Tunarr channel.',
+   body:'Type the address of your Tunarr server &mdash; usually <code>http://192.168.1.x:8000</code>. Once entered, click <strong>Detect</strong> next to Plex source ID to auto-fill that field.',
+
+   target:'#s-tunarr_url', action:null},
+
+  {title:'5. Save and test',
+
+   body:'Click <strong>Save connections</strong> to store your settings. Then click <strong>Test connections</strong> to confirm Routarr can reach all your services before moving on.',
+
+   target:'button.btn.p[onclick="saveSettings()"]', action:null},
+
+  {title:'6. Map your libraries',
+
+   body:'Scroll down to <strong>Library Mapping</strong>. For each Plex/Jellyfin library, pick the matching Tunarr library. Set <strong>Scan Priority</strong> on each row &mdash; use <em>Skip</em> on libraries like Music or Podcasts that you never want scanned. Click <strong>Save mapping</strong> when done.',
+
+   target:'#lib-map-body', action:null},
+
+  {title:'7. Create routing rules',
+
+   body:'Click <strong>Rules</strong> in the nav. Rules decide which Tunarr channel new content goes to. Routarr evaluates them highest-priority-first &mdash; first match wins.',
 
    target:'button.tab[onclick*="rules"]', action:()=>_tourNav('rules')},
 
-  {title:'5. Add a rule',
+  {title:'8. Add your first rule',
 
-   body:'Click <strong>+ Add rule</strong>. Pick a library, set genres to match (all must apply), optionally exclude genres, choose a channel, and set a priority. Higher priority rules are checked first.',
+   body:'Click <strong>+ Add rule</strong>. Pick a library, add genres to match (all must be present &mdash; AND logic), choose a Tunarr channel, and set a priority. Leave genres blank to match everything in the library.',
 
    target:'button[onclick="openAddRule()"]', action:null},
 
-  {title:'6. Route media manually',
+  {title:'9. Enable auto-route',
 
-   body:'The <strong>Media</strong> tab shows what Routarr has scanned from Plex. Tick items and use the action bar to route them to a channel instantly.',
+   body:'Tick <strong>Auto-route</strong> to have Routarr automatically apply your rules to every new arrival on each scan. You can also enable it per rule for finer control.',
+
+   target:'#auto-route-chk', action:null},
+
+  {title:'10. The Media tab',
+
+   body:'Click <strong>Media</strong> in the nav. This shows everything Routarr has scanned from Plex/Jellyfin. Items show their matched channel &mdash; items labelled <em>no rule</em> need a rule created before they can be routed.',
 
    target:'button.tab[onclick*="arrivals"]', action:()=>_tourNav('arrivals')},
 
+  {title:'11. Trigger a scan',
+
+   body:'Click <strong>Check Plex Now</strong> to run a scan immediately. A C64-style animation plays while scanning; new items appear as they are found. Items auto-route if you enabled that in step 9.',
+
+   target:'#scan-now-btn', action:null},
+
+  {title:'12. Route everything',
+
+   body:'Click <strong>Route All</strong> to push every item through your rules at once. Or tick individual items and use the action bar at the bottom to route them to a specific channel manually.',
+
+   target:'#raBtn', action:null},
+
   {title:'All set!',
 
-   body:'Routarr scans Plex automatically and routes new content via your rules. Check the <strong>Log</strong> tab anytime to see what has been processed.',
+   body:'Routarr will now scan Plex on your configured interval and route new content automatically. Check the <strong>Log</strong> tab to see every action taken. Re-open this tour any time with the &#9432; button in the top right.',
 
    target:null, action:null}
 
