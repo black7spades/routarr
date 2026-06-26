@@ -4420,6 +4420,40 @@ async def scan_now_ep(request: Request):
 
 
 
+@app.post("/api/plex-webhook")
+
+async def plex_webhook_ep(request: Request):
+
+    try:
+
+        form = await request.form()
+
+        payload = json.loads(form.get("payload", "{}"))
+
+    except Exception:
+
+        return JSONResponse({"ok": False}, status_code=400)
+
+    event = payload.get("event", "")
+
+    if event in ("library.new", "media.add"):
+
+        days = int(cfg("scan_days") or 14)
+
+        _cache.pop(f"plex_new_{days}", None)
+
+        _cache.pop("plex_sections", None)
+
+        if not _scan_state.get("scanning"):
+
+            asyncio.create_task(_run_scan_once())
+
+            logger.info(f"Plex webhook triggered scan: {event}")
+
+    return {"ok": True}
+
+
+
 @app.post("/api/route/mark-done/{rk}")
 
 async def mark_done_ep(rk: str, channel_name: str = "dismissed"):
@@ -6078,6 +6112,26 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
         <input id="s-scan_interval_minutes" type="number" min="5" placeholder="60">
 
         <div class="hint">How often Routarr checks Plex automatically. Leave blank to disable.</div>
+
+      </div>
+
+    </div>
+
+    <div class="fg" style="margin-bottom:12px">
+
+      <div class="field">
+
+        <label>Plex webhook URL</label>
+
+        <div style="display:flex;gap:8px;align-items:center">
+
+          <input id="webhook-url-display" readonly style="flex:1;cursor:pointer;font-family:monospace;font-size:12px" onclick="this.select()" value="">
+
+          <button class="btn sm" onclick="copyWebhookUrl()">Copy</button>
+
+        </div>
+
+        <div class="hint">Add this URL in Plex &rarr; Settings &rarr; Webhooks so Routarr scans the moment new media arrives.</div>
 
       </div>
 
@@ -10084,6 +10138,28 @@ async function loadSettings() {
   applyFontSize(fs);
 
   loadLibraryMapping();
+
+  const _whEl = document.getElementById('webhook-url-display');
+
+  if (_whEl) _whEl.value = window.location.origin + '/api/plex-webhook';
+
+}
+
+
+
+function copyWebhookUrl() {
+
+  const el = document.getElementById('webhook-url-display');
+
+  if (!el) return;
+
+  navigator.clipboard.writeText(el.value).then(() => {
+
+    const btn = el.nextElementSibling;
+
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+
+  });
 
 }
 
