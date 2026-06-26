@@ -415,6 +415,10 @@ _LOGIN_CSS = (
 
     '.lerr{color:#c46c71;font-size:13px;margin-bottom:12px;text-align:center;padding:8px;background:rgba(196,108,113,.08);border-radius:6px;border:1px solid rgba(196,108,113,.2)}'
 
+    '.lgwrap{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:18px}'
+
+    '.lglabel{font-size:11px;text-transform:uppercase;letter-spacing:2.5px;color:rgba(221,232,236,.35);font-weight:600;text-align:center}'
+
 )
 
 
@@ -438,7 +442,7 @@ def _login_page(error: str = '') -> HTMLResponse:
         '<div id="bg0" class="kb-layer"></div>'
         '<div id="bg1" class="kb-layer"></div>'
 
-        '<div class="card">'
+        '<div class="lgwrap"><div class="lglabel">Your Media Sources</div><div class="card">'
 
         '<div class="logo">&#9654; ROUTARR</div>'
 
@@ -488,7 +492,7 @@ def _login_page(error: str = '') -> HTMLResponse:
 
         '</script>'
 
-        '</div></body></html>'
+        '</div><div class="lglabel">To Tunarr</div></div></body></html>'
 
     )
 
