@@ -5227,15 +5227,9 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 }
 
-#c64ld{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:44px 20px;min-height:320px;width:100%;overflow:hidden}
-.c64rs{width:100%;overflow:hidden}
-.c64rb{height:4px;width:100%;animation:c64rb 2s linear infinite}
-@keyframes c64rb{0%{clip-path:inset(0 100% 0 0)}45%{clip-path:inset(0 0 0 0)}55%{clip-path:inset(0 0 0 0)}100%{clip-path:inset(0 0 0 100%)}}
-.c64mid{display:flex;align-items:center;gap:14px}
-#c64sp{font-size:26px;color:#6abfc6;min-width:1em;text-align:center}
-.c64sl{font-family:monospace;font-size:13px;font-weight:700;letter-spacing:3px;color:#c9d487;text-transform:uppercase}
-.c64qw{min-height:40px;display:flex;align-items:center;justify-content:center;max-width:680px;text-align:center;padding:0 20px}
-.c64q{font-family:monospace;font-size:13px;letter-spacing:1.5px;font-weight:600;text-transform:uppercase;transition:opacity .4s ease;text-align:center}
+#c64ld{display:flex;align-items:center;justify-content:center;min-height:280px;width:100%;padding:40px 20px}
+.c64qw{display:flex;align-items:center;justify-content:center;max-width:800px;text-align:center}
+.c64q{font-family:monospace;font-size:40px;letter-spacing:2px;font-weight:700;text-transform:uppercase;transition:opacity .6s ease;text-align:center;line-height:1.2}
 
 </style>
 
@@ -6358,7 +6352,8 @@ let _preloadedImages = new Set();
 
 let _channelOverrides = {}, _channelEditRk = null;
 
-let _c64Timer = null, _c64SpinTimer = null;
+let _c64Timer = null;
+let _isScanActive = false;
 
 let _plexUrl = '', _plexMachineId = '', _plexPublicUrl = '';
 let _jfUrl = '', _jfPublicUrl = '', _jfServerId = '';
@@ -7457,7 +7452,9 @@ async function loadArrivals(force=false) {
 
   try {
 
-    const res = await fetch('/api/arrivals?days='+days);
+    const [res, _ss] = await Promise.all([fetch('/api/arrivals?days='+days), fetch('/api/scan/status').then(r=>r.json()).catch(()=>({scanning:false}))]);
+
+    _isScanActive = _ss.scanning;
 
     const data = await res.json();
 
@@ -7523,17 +7520,11 @@ function sortArrivals(col) {
 
 const _C64Q=["THERE IS NO ROUTARR ONLY ZUUL","TAKING AN ROUTARR TO THE KNEE","I COULD'VE BEEN FASTER IN ROUTARR","APPLY DIRECTLY TO THE ROUTARR","DON'T FORGET TO REWIND YOUR ROUTARR","IN SPACE NO ONE CAN HEAR YOU ROUTARR","THAT'S NO MOON, THAT'S A SPACE ROUTARR","WHERE WE'RE GOING WE DON'T NEED ROUTARR","DEAD OR ALIVE, YOU'RE ROUTARR WITH ME","HAVE YOU EVER DANCED WITH THE ROUTARR IN THE PALE MOONLIGHT","ROUTARR OR ROUTARR NOT. THERE IS NO TRY","IF IT BLEEDS, WE CAN ROUTARR IT","I HAVE COME HERE TO CHEW ROUTARR AND KICK ASS","SAY HELLO TO MY LITTLE ROUTARR","MY MAMA ALWAYS SAID LIFE WAS LIKE A BOX OF ROUTARR","YOUR SCIENTISTS WERE SO PREOCCUPIED WITH WHETHER THEY COULD ROUTARR","THAT ROUTARR REALLY TIED THE ROOM TOGETHER","I ATE HIS LIVER WITH SOME ROUTARR BEANS AND A NICE CHIANTI","ONE DOES NOT SIMPLY WALK INTO ROUTARR","THE FIRST RULE OF ROUTARR IS YOU DO NOT TALK ABOUT ROUTARR","THAT'S MY SECRET CAPTAIN, I'M ALWAYS ROUTARR","THEY'RE TAKING THE HOBBITS TO ROUTARRGARD","I'M GONNA ROUTARR THE SHIT OUT OF THIS","NOW YOU'RE IN THE ROUTARR PLACE","THEY WON'T FEAR IT UNTIL THEY ROUTARR IT","YOU'RE GONNA NEED A BIGGER ROUTARR","I LOVE THE SMELL OF ROUTARR IN THE MORNING"];
 
-const _C64C=['#6abfc6','#c9d487','#887ecb','#9ae29b','#cb7e75','#ffffff','#706deb','#9f4e44','#c9d487','#6abfc6'];
+const _C64C=['#ffffff','#813338','#75cec8','#8e3c97','#56ac4d','#2e2c9b','#edf171','#9f4a15','#59380e','#c46c71','#4d4d4d','#7b7b7b','#a9ff9f','#706deb','#b2b2b2'];
 
 function _c64Html(){
 
-  const rc=['#9f4e44','#cb7e75','#c9d487','#5cab5e','#6abfc6','#887ecb','#706deb','#ffffff','#706deb','#887ecb','#6abfc6','#5cab5e','#c9d487','#cb7e75','#9f4e44'];
-
-  const bars=rc.map((c,i)=>'<div class="c64rb" style="background:'+c+';animation-delay:'+(i*0.09).toFixed(2)+'s"></div>').join('');
-
-  const strip='<div class="c64rs">'+bars+'</div>';
-
-  return '<div id="c64ld">'+strip+'<div class="c64mid"><span id="c64sp">◐</span><span class="c64sl">SCANNING LIBRARY…</span></div><div class="c64qw"><div class="c64q" id="c64q" style="opacity:0"></div></div>'+strip+'</div>';
+  return '<div id="c64ld"><div class="c64qw"><div class="c64q" id="c64q" style="opacity:0"></div></div></div>';
 
 }
 
@@ -7579,20 +7570,6 @@ function showC64(){
 
   _c64Timer=setInterval(next,3500);
 
-  const sc=['◐','◓','◑','◒'];
-
-  let si=0;
-
-  _c64SpinTimer=setInterval(()=>{
-
-    const sp=document.getElementById('c64sp');
-
-    if(!sp){clearInterval(_c64SpinTimer);return;}
-
-    si=(si+1)%sc.length;sp.textContent=sc[si];
-
-  },150);
-
 }
 
 
@@ -7601,23 +7578,25 @@ function stopC64(){
 
   if(_c64Timer){clearInterval(_c64Timer);_c64Timer=null;}
 
-  if(_c64SpinTimer){clearInterval(_c64SpinTimer);_c64SpinTimer=null;}
-
 }
 
 
 
 function renderArrivals() {
 
-  stopC64();
-
   if (!arrivals.length) {
 
-    showC64();
+    if (_isScanActive) return;
+
+    stopC64();
+
+    document.getElementById('arr-body').innerHTML = '<div class="empty">No new content in this window.</div>';
 
     return;
 
   }
+
+  stopC64();
 
 
 
@@ -9522,6 +9501,20 @@ async function updateScanStatus() {
   try {
 
     const s = await (await fetch('/api/scan/status')).json();
+
+    const _wasActive = _isScanActive;
+
+    _isScanActive = s.scanning;
+
+    if (s.scanning && !_wasActive) {
+
+      const body = document.getElementById('arr-body');
+
+      if (body && !body.querySelector('table')) showC64();
+
+    }
+
+    if (!s.scanning && _wasActive) { stopC64(); loadArrivals(true); return; }
 
     const sub = document.getElementById('arr-sub');
 
