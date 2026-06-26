@@ -10675,8 +10675,9 @@ function closeDeactivateModal() {
 }
 
 async function execDeactivate() {
+  const fn = _deactivatePending;
   closeDeactivateModal();
-  if (_deactivatePending) await _deactivatePending();
+  if (fn) await fn();
 }
 async function loadChannelAutoRoute() {
   try {
