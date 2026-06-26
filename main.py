@@ -1287,6 +1287,20 @@ async def jellyfin_new_content(client, days: int = 14) -> list:
 
 
 
+    try:
+
+        _jf_freq = json.loads(cfg("library_scan_freq") or "{}")
+
+    except Exception:
+
+        _jf_freq = {}
+
+    libs = [lib for lib in libs if _jf_freq.get(f"jf:{lib['tunarr_lib_id']}", "normal") != "skip"]
+
+    if not libs:
+
+        return []
+
     routed_db = get_routed_items()
 
     cutoff_ts = int(datetime.now(timezone.utc).timestamp()) - days * 86400
@@ -2323,6 +2337,10 @@ async def _run_scan_once():
 
         days = int(cfg("scan_days") or 14)
 
+        if not cfg("first_scan_done"):
+
+            days = 0
+
         _cache.pop(f"plex_new_{days}", None)
 
         _cache.pop(f"jf_new_{days}", None)
@@ -2360,6 +2378,10 @@ async def _run_scan_once():
                     del _cache[key]
 
         _scan_state["last_scan"] = time.time()
+
+        if not cfg("first_scan_done"):
+
+            cfg_set({"first_scan_done": "1"})
 
         # Auto-route new arrivals (global, per-channel, or per-rule setting)
 
@@ -5081,6 +5103,8 @@ tr:last-child td{border-bottom:none}tr:hover td{background:rgba(255,255,255,.02)
 .lib-source-hdr{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;padding-bottom:6px;border-bottom:1px solid var(--bdr);margin-bottom:4px}
 
 .scan-freq-sel{font-size:11px;padding:3px 6px;border-radius:5px;border:1px solid var(--bdr);background:var(--s2);color:var(--txt);cursor:pointer;min-width:80px}
+.lib-col-hdr{display:flex;align-items:center;gap:12px;padding:0 0 5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+.lib-col-hdr .lch-spc{flex:1}.lib-col-hdr .lch-arr{color:transparent;font-size:16px}.lib-col-hdr .lch-freq{min-width:80px;text-align:right}
 
 /* Rules */
 
@@ -9822,9 +9846,11 @@ async function loadLibraryMapping() {
 
     let html = '';
 
-    if (_libMapSections.length) html += '<div class="lib-source-hdr">Plex</div>' + makeRows(_libMapSections, true);
+    const _colHdr = '<div class="lib-col-hdr"><span class="lch-spc"></span><span class="lch-arr">→</span><span class="lch-spc"></span><span class="lch-freq">Scan Priority</span></div>';
 
-    if (_jfSections.length) html += '<div class="lib-source-hdr" style="margin-top:14px">Jellyfin</div>' + makeRows(_jfSections, false);
+    if (_libMapSections.length) html += '<div class="lib-source-hdr">Plex</div>' + _colHdr + makeRows(_libMapSections, true);
+
+    if (_jfSections.length) html += '<div class="lib-source-hdr" style="margin-top:14px">Jellyfin</div>' + _colHdr + makeRows(_jfSections, true);
 
     body.innerHTML = html;
 
@@ -11027,6 +11053,8 @@ loadArrivals();
 
 updateScanStatus();
 
+fetch('/api/settings').then(r=>r.json()).then(s=>{if(!s.setup_complete) setTimeout(startTour, 900);}).catch(()=>{});
+
 
 // -- Tour ---------------------------------------------------------------------
 
@@ -11058,19 +11086,25 @@ const TOUR = [
 
    target:'#s-plex_url', action:null},
 
-  {title:'3. Create a routing rule',
+  {title:'3. Map your libraries',
+
+   body:'In <strong>Settings → Libraries</strong>, map each Plex/Jellyfin library to its Tunarr counterpart. Set <strong>Scan Priority</strong> on each — mark libraries you never want routed as <strong>Skip</strong> to exclude them from all scans.',
+
+   target:'button.tab[onclick*="settings"]', action:()=>_tourNav('settings')},
+
+  {title:'4. Create a routing rule',
 
    body:'Switch to the <strong>Rules</strong> tab. Rules decide where new Plex content is sent — you match by library and genre, and choose a Tunarr channel.',
 
    target:'button.tab[onclick*="rules"]', action:()=>_tourNav('rules')},
 
-  {title:'4. Add a rule',
+  {title:'5. Add a rule',
 
    body:'Click <strong>+ Add rule</strong>. Pick a library, set genres to match (all must apply), optionally exclude genres, choose a channel, and set a priority. Higher priority rules are checked first.',
 
    target:'button[onclick="openAddRule()"]', action:null},
 
-  {title:'5. Route media manually',
+  {title:'6. Route media manually',
 
    body:'The <strong>Media</strong> tab shows what Routarr has scanned from Plex. Tick items and use the action bar to route them to a channel instantly.',
 
@@ -11217,6 +11251,8 @@ function endTour() {
   if (_tRing) _tRing.style.display = 'none';
 
   if (_tTip) _tTip.style.display = 'none';
+
+  fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({setup_complete:'1'})}).catch(()=>{});
 
 }
 
