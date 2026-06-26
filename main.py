@@ -11527,7 +11527,19 @@ function _doTourStep() {
 
   if (s.action) { try { s.action(); } catch(e){} }
 
-  setTimeout(() => _placeTip(s), s.action ? 350 : 0);
+  setTimeout(() => {
+
+    if (s.target) {
+
+      const _el = document.querySelector(s.target);
+
+      if (_el) _el.scrollIntoView({behavior:'smooth', block:'center'});
+
+    }
+
+    setTimeout(() => _placeTip(s), s.target ? 380 : 0);
+
+  }, s.action ? 350 : 0);
 
 }
 
