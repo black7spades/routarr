@@ -3274,11 +3274,13 @@ async def get_channel_idents():
 
                             continue
 
-                        ident = (ch.get("offline") or {}).get("picture", "")
+                        icon = ch.get("icon", {})
+
+                        ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
 
                         if not ident:
-                            icon = ch.get("icon", {})
-                            ident = (icon.get("path", "") if isinstance(icon, dict) else str(icon or ""))
+
+                            ident = (ch.get("offline") or {}).get("picture", "")
 
                         if ident and "ChatGPT" not in ident:
 
@@ -10673,8 +10675,9 @@ function closeDeactivateModal() {
 }
 
 async function execDeactivate() {
+  const fn = _deactivatePending;
   closeDeactivateModal();
-  if (_deactivatePending) await _deactivatePending();
+  if (fn) await fn();
 }
 async function loadChannelAutoRoute() {
   try {
