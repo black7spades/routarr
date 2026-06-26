@@ -6430,18 +6430,18 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   <!-- Flows -->
   <div class="scard" style="margin-top:20px">
     <h3>Flows <span style="font-weight:400;font-size:12px;color:var(--muted)">(advanced)</span></h3>
-    <p class="sdesc">Flows are multi-step automated pipelines. Use them when standard rules aren't expressive enough, for example applying multiple filters in sequence or chaining transformations before routing.</p>
+    <p class="sdesc">Flows are built automatically as you create rules and process channels. The Flows tab gives you a single screen to see and tune the complete routing-to-processing pipeline for each channel, without having to switch back and forth between Tunarr, Plex, Jellyfin, and different Routarr tabs.</p>
     <div class="hstep">
       <div class="hstep-n">1</div>
-      <div class="hstep-b">Go to the <strong>Flows</strong> tab and click <strong>+ New flow</strong>.</div>
+      <div class="hstep-b">Go to the <strong>Flows</strong> tab. Each channel that has at least one rule or has been processed will have a flow entry already waiting for you.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">2</div>
-      <div class="hstep-b">Add steps: each step can filter items, transform metadata, or route to a channel. Steps run in order; a filter step narrows the working set before the next step sees it.</div>
+      <div class="hstep-b">Select a channel flow to see its full pipeline: which rules feed it, how matched content is processed, and how it ends up in Tunarr. You can adjust any stage from this single view.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">3</div>
-      <div class="hstep-b">Run a flow manually from the Flows tab, or enable auto-run in the flow settings to have it execute on each scan alongside your normal routing rules.</div>
+      <div class="hstep-b">Use Flows when you want to fine-tune a channel end-to-end in one place rather than hunting across Settings, Rules, and the Media tab separately.</div>
     </div>
   </div>
 
