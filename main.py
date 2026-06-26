@@ -8721,6 +8721,20 @@ function openAddRuleFor(sectionId, labels) {
 
 
 
+function openAddRuleForCh(chId) {
+
+  openAddRule().then(() => {
+
+    const el = document.getElementById('r-channel');
+
+    if (el) for (const o of el.options) { if (o.value === chId) { o.selected = true; break; } }
+
+  });
+
+}
+
+
+
 // ── Genre edit helpers
 
 function startEditGenres(rk) {
@@ -10486,12 +10500,12 @@ function _miniRuleCard(r, active) {
     ? r.label.split(',').map(g=>'<span class="pill" style="font-size:10px">'+escHtml(g.trim())+'</span>').join(' ')
     : '<span style="color:var(--muted);font-size:11px">any genre</span>';
   const btnStyle = active
-    ? 'background:var(--acc2);border:1px solid var(--acc2);color:#fff'
+    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bdr);flex-wrap:wrap">'
     +'<span style="font-size:9px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:3px;padding:1px 5px;flex-shrink:0">'+srcLabel+'</span>'
     +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+' — '+sectionPart+' → '+labelPart+'</div>'
-    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
     +'</div>';
 }
 
@@ -10505,7 +10519,7 @@ function _pipelineCard(ch, rules, proc) {
         + activeRules.map(r=>_miniRuleCard(r,true)).join('')
         + inactiveRules.map(r=>_miniRuleCard(r,false)).join('')
         + '</div>'
-    : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No rules route to this channel yet</div>';
+    : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No rules route to this channel yet — <button onclick="openAddRuleForCh(this.dataset.ch)" data-ch="'+escHtml(ch.id)+'" style="background:none;border:none;color:var(--acc);cursor:pointer;font-size:12px;padding:0;text-decoration:underline">+ Create a rule</button></div>';
 
   let procHtml;
   if (proc) {
