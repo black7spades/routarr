@@ -2443,7 +2443,7 @@ async def _run_scan_once():
 
                         if _ar_rules:
 
-                            _full = resolve_channel_full(_i["sectionId"], _i.get("labels", []))
+                            _full = resolve_channel_full(_i["sectionId"], _i.get("labels", []), _i.get("title", ""))
 
                             if _full and str(_full[2]) in _ar_rules:
 
@@ -2488,6 +2488,10 @@ async def _run_scan_once():
 
 
 async def _scan_loop():
+
+    await asyncio.sleep(30)  # brief startup delay
+
+    await _run_scan_once()
 
     while True:
 
