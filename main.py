@@ -546,6 +546,14 @@ def migrate_db():
 
             pass  # already exists
 
+        try:
+
+            db.execute("ALTER TABLE channel_proc_settings ADD COLUMN preset_name TEXT DEFAULT ''")
+
+        except Exception:
+
+            pass  # already exists
+
 migrate_db()
 
 
@@ -4642,6 +4650,8 @@ async def process_channel(channel_id: str, request: Request):
 
         ch_name    = body.get("channel_name") or channel_id
 
+        preset_nm  = str(body.get("preset_name") or "")
+
         async with httpx.AsyncClient() as c:
 
             items = await fetch_channel_lineup(c, channel_id)
@@ -4720,9 +4730,9 @@ async def process_channel(channel_id: str, request: Request):
 
                 "INSERT INTO channel_proc_settings"
 
-                " (channel_id,channel_name,dedupe,shuffle,pad_minutes,updated_at)"
+                " (channel_id,channel_name,dedupe,shuffle,pad_minutes,preset_name,updated_at)"
 
-                " VALUES(?,?,?,?,?,?)"
+                " VALUES(?,?,?,?,?,?,?)"
 
                 " ON CONFLICT(channel_id) DO UPDATE SET"
 
@@ -4730,9 +4740,11 @@ async def process_channel(channel_id: str, request: Request):
 
                 " shuffle=excluded.shuffle,pad_minutes=excluded.pad_minutes,"
 
+                " preset_name=excluded.preset_name,"
+
                 " updated_at=excluded.updated_at",
 
-                (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, int(time.time())))
+                (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, preset_nm, int(time.time())))
 
         return {"ok": True, "stats": stats}
 
@@ -4771,6 +4783,8 @@ async def get_channel_proc_settings():
         "shuffle": r["shuffle"],
 
         "pad_minutes": r["pad_minutes"],
+
+        "preset_name": r["preset_name"] if r["preset_name"] is not None else "",
 
         "updated_at": r["updated_at"]
 
@@ -5184,6 +5198,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 #clear-confirm-modal.on{display:flex}
 
+#deactivate-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center}
+
+#deactivate-modal.on{display:flex}
+
 .mbox{background:var(--s1);border:1px solid var(--bdr);border-radius:12px;padding:24px;width:480px;max-width:95vw}
 
 .mbox h3{font-size:14px;font-weight:600;margin-bottom:16px}
@@ -5595,7 +5613,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <h2>Auto Flows</h2>
 
-      <div class="sub">Content matching these flows is routed automatically on every scan. Toggle any flow to enable or disable it.</div>
+      <div class="sub">Flows build automatically as you create rules and process channels. Each card shows the complete routing and processing pipeline for a channel in one place. Activate flows to have Routarr apply them on every scan without any manual action.</div>
 
     </div>
 
@@ -5613,6 +5631,26 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <button class="btn p sm" onclick="routeAllNow()" title="Immediately route all pending items to their matched channels">⚡ Run All Now</button>
 
+    </div>
+
+  </div>
+
+  <div class="ch-sort-bar" id="flows-filter-bar">
+
+    <label>Sort</label>
+
+    <select id="flows-sort" onchange="renderFlows()">
+      <option value="name-asc">Channel A→Z</option>
+      <option value="name-desc">Channel Z→A</option>
+      <option value="rules-desc">Most rules</option>
+      <option value="rules-asc">Fewest rules</option>
+      <option value="proc-first">Processed first</option>
+    </select>
+
+    <div style="display:flex;gap:4px;margin-left:auto">
+      <button class="btn g sm flows-f-btn" data-f="all" onclick="setFlowFilter('all')">All</button>
+      <button class="btn g sm flows-f-btn" data-f="active" onclick="setFlowFilter('active')" style="opacity:.5">Active</button>
+      <button class="btn g sm flows-f-btn" data-f="inactive" onclick="setFlowFilter('inactive')" style="opacity:.5">Inactive</button>
     </div>
 
   </div>
@@ -5931,7 +5969,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div class="field">
 
-        <label>Jellyfin public URL <span style="color:var(--muted);font-weight:400">(optional &mdash; for media links)</span></label>
+        <label>Jellyfin public URL <span style="color:var(--muted);font-weight:400">(optional, for media links)</span></label>
 
         <input id="s-jellyfin_public_url" placeholder="https://jellyfin.yourdomain.com">
 
@@ -5977,7 +6015,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div class="field">
 
-        <label>Plex public URL <span style="color:var(--muted);font-weight:400">(optional &mdash; for media links)</span></label>
+        <label>Plex public URL <span style="color:var(--muted);font-weight:400">(optional, for media links)</span></label>
 
         <input id="s-plex_public_url" placeholder="https://plex.yourdomain.com">
 
@@ -6158,7 +6196,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <!-- Step 1 -->
   <div class="scard" style="margin-top:20px">
-    <h3>Step 1 &mdash; Connect your services</h3>
+    <h3>Step 1: Connect your services</h3>
     <p class="sdesc">Open <strong>Settings</strong> in the top nav. This is where you tell Routarr how to reach Plex, Tunarr, and optionally Jellyfin.</p>
 
     <div class="help-mockup">
@@ -6214,7 +6252,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <!-- Step 2 -->
   <div class="scard" style="margin-top:20px">
-    <h3>Step 2 &mdash; Map your libraries</h3>
+    <h3>Step 2: Map your libraries</h3>
     <p class="sdesc">Still in Settings, scroll down to <strong>Library Mapping</strong>. This links each of your Plex/Jellyfin libraries to the corresponding Tunarr library. Without this, routing won't work.</p>
 
     <div class="help-mockup">
@@ -6238,7 +6276,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="hstep">
       <div class="hstep-n">1</div>
-      <div class="hstep-b">Click <strong>Auto-configure from Tunarr</strong> to automatically match libraries by name. Review the results &mdash; Tunarr can have multiple libraries with similar names.</div>
+      <div class="hstep-b">Click <strong>Auto-configure from Tunarr</strong> to automatically match libraries by name. Review the results. Tunarr can have multiple libraries with similar names.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">2</div>
@@ -6248,9 +6286,9 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <div class="hstep-n">3</div>
       <div class="hstep-b">Use the <strong>Scan Priority</strong> dropdown on each row to control scanning:
         <ul>
-          <li><strong>Priority</strong> &mdash; scanned and rule-matched first</li>
-          <li><strong>Normal</strong> &mdash; standard behaviour (default)</li>
-          <li><strong>Skip</strong> &mdash; never scanned, never routed. Use this for Music, Podcasts, Audiobooks, or any library you want Routarr to completely ignore.</li>
+          <li><strong>Priority:</strong> scanned and rule-matched first</li>
+          <li><strong>Normal:</strong> standard behaviour (default)</li>
+          <li><strong>Skip:</strong> never scanned, never routed. Use this for Music, Podcasts, Audiobooks, or any library you want Routarr to completely ignore.</li>
         </ul>
       </div>
     </div>
@@ -6262,7 +6300,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <!-- Step 3 -->
   <div class="scard" style="margin-top:20px">
-    <h3>Step 3 &mdash; Create routing rules</h3>
+    <h3>Step 3: Create routing rules</h3>
     <p class="sdesc">Open the <strong>Rules</strong> tab in the top nav. Rules decide which Tunarr channel new content goes to. Routarr evaluates them highest-priority-first; the first match wins.</p>
 
     <div class="help-mockup">
@@ -6299,7 +6337,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       </div>
       <div class="hm-row">
         <span class="hm-lbl">Plays on</span>
-        <span class="hm-val">CH 4 &mdash; Sci-Fi Channel</span>
+        <span class="hm-val">CH 4 / Sci-Fi Channel</span>
         <span class="hm-note">&#8592; which Tunarr channel this rule routes to</span>
       </div>
       <div class="hm-row">
@@ -6336,18 +6374,18 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     </div>
     <div class="hstep">
       <div class="hstep-n">6</div>
-      <div class="hstep-b">Tick <strong>Auto-route</strong> on the rule &mdash; or use the global Auto-route toggle on the Rules page &mdash; to have Routarr apply the rule automatically on every scan without any manual action.</div>
+      <div class="hstep-b">Tick <strong>Auto-route</strong> on the rule, or use the global Auto-route toggle on the Rules page, to have Routarr apply it automatically on every scan without any manual action.</div>
     </div>
     <div class="htip"><strong>Rule strategy:</strong> start with a broad catch-all rule at priority 10 (e.g. &ldquo;All Movies &rarr; Movies Channel&rdquo;), then add specific rules at priority 100+ to override for particular genres or franchises.</div>
   </div>
 
   <!-- Step 4 -->
   <div class="scard" style="margin-top:20px">
-    <h3>Step 4 &mdash; Route media</h3>
+    <h3>Step 4: Route media</h3>
     <p class="sdesc">The <strong>Media</strong> tab shows everything Routarr has found in Plex/Jellyfin. Items are either auto-routed (if auto-route is on) or waiting here for manual action.</p>
 
     <div class="help-mockup">
-      <div class="hm-tag">Media tab &mdash; top controls</div>
+      <div class="hm-tag">Media tab: top controls</div>
       <div class="hm-row">
         <span class="hm-lbl">Check Plex Now</span>
         <span class="hm-val">button</span>
@@ -6371,10 +6409,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     </div>
 
     <div class="help-mockup" style="margin-top:0">
-      <div class="hm-tag">Media tab &mdash; action bar (appears when items are ticked)</div>
+      <div class="hm-tag">Media tab: action bar (appears when items are ticked)</div>
       <div class="hm-row">
         <span class="hm-lbl">Route to channel &rarr;</span>
-        <span class="hm-val">CH 3 &mdash; Movies</span>
+        <span class="hm-val">CH 3 / Movies</span>
         <span class="hm-note">&#8592; pick a channel then click Route to Channel</span>
       </div>
       <div class="hm-row">
@@ -6396,7 +6434,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="hstep">
       <div class="hstep-n">1</div>
-      <div class="hstep-b">Click <strong>Check Plex Now</strong> to trigger a scan. A C64-style animation plays while scanning. New items appear in the list as they are found. Items showing a channel name have a matching rule &mdash; items labelled &ldquo;no rule&rdquo; need a rule created first.</div>
+      <div class="hstep-b">Click <strong>Check Plex Now</strong> to trigger a scan. Scans can take a few minutes depending on your library size and how quickly your servers respond. You can work with Routarr again once the scanning indicator at the top settles. New items appear in the list as they arrive. Items showing a channel name have a matching rule; items labelled &ldquo;no rule&rdquo; need a rule created first.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">2</div>
@@ -6414,7 +6452,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <div class="hstep-n">5</div>
       <div class="hstep-b">Use the filter bar to narrow the list: search by title, genre, or channel; show only &ldquo;Has a rule&rdquo; / &ldquo;No rule&rdquo;; toggle Plex/Jellyfin sources; enable &ldquo;Show already routed&rdquo; to review everything including what has already been sent.</div>
     </div>
-    <div class="htip"><strong>Auto-routing:</strong> With Auto-route enabled on your rules, Routarr routes matching items automatically on each scheduled scan. You only need to open the Media tab to handle exceptions &mdash; items with no matching rule, or ones where the automatic routing picked the wrong channel.</div>
+    <div class="htip"><strong>Auto-routing:</strong> With Auto-route enabled on your rules, Routarr routes matching items automatically on each scheduled scan. You only need to open the Media tab to handle exceptions: items with no matching rule, or ones where automatic routing picked the wrong channel.</div>
   </div>
 
   <!-- Channels -->
@@ -6425,27 +6463,23 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <div class="hstep-n">1</div>
       <div class="hstep-b">Channels are read directly from Tunarr. If a channel is missing here, verify it exists in Tunarr and that the Tunarr connection is working (Settings &rarr; Test connections).</div>
     </div>
-    <div class="hstep">
-      <div class="hstep-n">2</div>
-      <div class="hstep-b">You can designate a channel as a <strong>filler destination</strong> from this tab. Items routed to a filler-configured channel are appended to the associated Tunarr filler list rather than the main channel programming.</div>
-    </div>
   </div>
 
   <!-- Flows -->
   <div class="scard" style="margin-top:20px">
     <h3>Flows <span style="font-weight:400;font-size:12px;color:var(--muted)">(advanced)</span></h3>
-    <p class="sdesc">Flows are multi-step automated pipelines. Use them when standard rules aren't expressive enough &mdash; for example, applying multiple filters in sequence or chaining transformations before routing.</p>
+    <p class="sdesc">Flows are built automatically as you create rules and process channels. The Flows tab gives you a single screen to see and tune the complete routing-to-processing pipeline for each channel, without having to switch back and forth between Tunarr, Plex, Jellyfin, and different Routarr tabs.</p>
     <div class="hstep">
       <div class="hstep-n">1</div>
-      <div class="hstep-b">Go to the <strong>Flows</strong> tab and click <strong>+ New flow</strong>.</div>
+      <div class="hstep-b">Go to the <strong>Flows</strong> tab. Each channel that has at least one rule or has been processed will have a flow entry already waiting for you.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">2</div>
-      <div class="hstep-b">Add steps: each step can filter items, transform metadata, or route to a channel. Steps run in order &mdash; a filter step narrows the working set before the next step sees it.</div>
+      <div class="hstep-b">Select a channel flow to see its full pipeline: which rules feed it, how matched content is processed, and how it ends up in Tunarr. You can adjust any stage from this single view.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">3</div>
-      <div class="hstep-b">Run a flow manually from the Flows tab, or enable auto-run in the flow settings to have it execute on each scan alongside your normal routing rules.</div>
+      <div class="hstep-b">Use Flows when you want to fine-tune a channel end-to-end in one place rather than hunting across Settings, Rules, and the Media tab separately.</div>
     </div>
   </div>
 
@@ -6662,6 +6696,30 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <button class="btn g" onclick="closeProcModal()">Cancel</button>
 
       <button class="btn p" id="proc-run-btn" onclick="runProcess()">Process &amp; Save</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+
+<!-- Deactivate Flow Confirm Modal -->
+
+<div id="deactivate-modal" class="">
+
+  <div class="mbox" style="width:380px">
+
+    <h3>Deactivate this flow?</h3>
+
+    <p id="deactivate-modal-msg" style="font-size:13px;color:var(--muted);margin:0 0 20px"></p>
+
+    <div class="row" style="justify-content:flex-end;gap:8px">
+
+      <button class="btn g" onclick="closeDeactivateModal()">Cancel</button>
+
+      <button class="btn sm" style="background:var(--acc2);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer" onclick="execDeactivate()">Deactivate</button>
 
     </div>
 
@@ -9307,6 +9365,10 @@ function _applyProcSettingsToForm(s) {
 
 let _procPresets = [];
 
+let _flowFilter = 'all';
+
+let _deactivatePending = null;
+
 
 
 async function loadProcPresets() {
@@ -9480,6 +9542,8 @@ async function runProcess() {
     shuffle:     document.getElementById('proc-shuffle').value,
 
     pad_minutes: parseInt(document.getElementById('proc-pad').value) || 0,
+
+    preset_name: document.getElementById('proc-preset-name').value.trim(),
 
   };
 
@@ -10363,13 +10427,14 @@ async function loadFlows() {
   const el = document.getElementById('flows-body');
   if (el) el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes, procSetRes] = await Promise.all([
+    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes, procSetRes, presetsRes] = await Promise.all([
       fetch('/api/routing').catch(()=>null),
       fetch('/api/routing/auto-route').catch(()=>null),
       fetch('/api/channels').catch(()=>null),
       fetch('/api/channels/auto-route').catch(()=>null),
       fetch('/api/settings').catch(()=>null),
       fetch('/api/channels/proc-settings').catch(()=>null),
+      fetch('/api/process-presets').catch(()=>null),
     ]);
     if (rulesRes) { const d = await rulesRes.json().catch(()=>[]); if (Array.isArray(d)) _rulesCache = d; }
     if (ruleArRes) { const d = await ruleArRes.json().catch(()=>({})); _autoRouteRules = new Set((d.enabled||[]).map(String)); }
@@ -10377,6 +10442,7 @@ async function loadFlows() {
     if (chArRes) { const d = await chArRes.json().catch(()=>({})); _autoRouteChannels = new Set(d.enabled||[]); }
     if (settingsRes) { const d = await settingsRes.json().catch(()=>({})); _autoRoute = (d.auto_route==='1'); updateAutoRouteUI(); }
     if (procSetRes) { const d = await procSetRes.json().catch(()=>({})); _channelProcSettings = d; }
+    if (presetsRes) { const d = await presetsRes.json().catch(()=>[]); if (Array.isArray(d)) _procPresets = d; }
   } catch(e) {}
   renderFlows();
 }
@@ -10400,7 +10466,7 @@ function _flowRuleCard(r, active) {
     +'<div style="font-weight:600;font-size:13px">'+escHtml(r.name)+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:3px">'+sectionPart+' &nbsp;→&nbsp; '+labelPart+' &nbsp;→&nbsp; <strong style="color:var(--txt)">'+escHtml(r.channel_name)+'</strong></div>'
     +'</div>'
-    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
 }
 
@@ -10420,12 +10486,12 @@ function _miniRuleCard(r, active) {
     ? r.label.split(',').map(g=>'<span class="pill" style="font-size:10px">'+escHtml(g.trim())+'</span>').join(' ')
     : '<span style="color:var(--muted);font-size:11px">any genre</span>';
   const btnStyle = active
-    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    ? 'background:var(--acc2);border:1px solid var(--acc2);color:#fff'
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bdr);flex-wrap:wrap">'
     +'<span style="font-size:9px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:3px;padding:1px 5px;flex-shrink:0">'+srcLabel+'</span>'
     +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+' — '+sectionPart+' → '+labelPart+'</div>'
-    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
 }
 
@@ -10443,7 +10509,9 @@ function _pipelineCard(ch, rules, proc) {
 
   let procHtml;
   if (proc) {
+    const _presetBadge = proc.preset_name ? '<span class="pill" style="font-size:11px;background:var(--acc)22;color:var(--acc);font-weight:700">'+escHtml(proc.preset_name)+'</span> ' : '';
     procHtml = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +_presetBadge
       +(proc.dedupe ? '<span class="pill" style="font-size:11px">Dedupe</span>' : '')
       +'<span class="pill" style="font-size:11px">'+shuffleLabel(proc.shuffle)+'</span>'
       +(proc.pad_minutes>0 ? '<span class="pill" style="font-size:11px">'+proc.pad_minutes+'m pad</span>' : '')
@@ -10459,13 +10527,13 @@ function _pipelineCard(ch, rules, proc) {
   const borderColor = autoOn ? 'var(--acc)' : 'var(--bdr)';
   const opacity = autoOn ? '' : ';opacity:.75';
   const btnStyle = autoOn
-    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    ? 'background:var(--acc2);border:1px solid var(--acc2);color:#fff'
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div class="scard" style="padding:0;border-left:3px solid '+borderColor+opacity+';overflow:hidden">'
     +'<div style="padding:10px 14px;display:flex;align-items:center;gap:10px">'
     +'<span style="font-size:10px;font-weight:700;color:var(--muted);background:var(--s3);border-radius:4px;padding:2px 6px;flex-shrink:0">CH</span>'
     +'<div style="flex:1;font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
-    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!autoOn)+')" style="flex-shrink:0;'+btnStyle+';padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(autoOn?'⚡ Auto On':'Auto Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="channel" data-id="'+escHtml(ch.id)+'" data-name="'+escHtml(ch.name)+'" data-active="'+(autoOn?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(autoOn?'Deactivate':'Activate')+'</button>'
     +'</div>'
     +'<div style="padding:6px 14px;border-top:1px solid var(--bdr)">'
     +'<div style="font-size:10px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px">Routing rules</div>'
@@ -10489,13 +10557,24 @@ function _flowChannelCard(ch, active) {
     +'<div style="font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:3px">Any new content matched to this channel → auto-route</div>'
     +'</div>'
-    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="channel" data-id="'+escHtml(ch.id)+'" data-name="'+escHtml(ch.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
+}
+
+function setFlowFilter(v) {
+  _flowFilter = v;
+  document.querySelectorAll('.flows-f-btn').forEach(b => {
+    b.style.opacity = b.dataset.f === v ? '1' : '.5';
+    b.style.fontWeight = b.dataset.f === v ? '600' : '';
+  });
+  renderFlows();
 }
 
 function renderFlows() {
   const el = document.getElementById('flows-body');
   if (!el) return;
+
+  const sortVal = (document.getElementById('flows-sort') || {}).value || 'name-asc';
 
   const chRuleMap = {};
   for (const r of _rulesCache) {
@@ -10508,20 +10587,34 @@ function renderFlows() {
     if (_autoRouteRules.has(String(r.id))) autoChIds.add(r.channel_id);
   }
 
-  const activePipelines = allChannels.filter(c => autoChIds.has(c.id));
-  const inactiveCh      = allChannels.filter(c => !autoChIds.has(c.id));
+  let activePipelines = allChannels.filter(c => autoChIds.has(c.id));
+  let inactiveCh      = allChannels.filter(c => !autoChIds.has(c.id));
   const coveredRuleIds  = new Set(activePipelines.flatMap(c => (chRuleMap[c.id]||[]).map(r=>r.id)));
   const inactiveRules   = _rulesCache.filter(r => !_autoRouteRules.has(String(r.id)) && !coveredRuleIds.has(r.id));
+
+  const sortCh = arr => {
+    arr = [...arr];
+    if (sortVal === 'name-asc')    arr.sort((a,b) => a.name.localeCompare(b.name));
+    else if (sortVal === 'name-desc')   arr.sort((a,b) => b.name.localeCompare(a.name));
+    else if (sortVal === 'rules-desc')  arr.sort((a,b) => (chRuleMap[b.id]||[]).length - (chRuleMap[a.id]||[]).length);
+    else if (sortVal === 'rules-asc')   arr.sort((a,b) => (chRuleMap[a.id]||[]).length - (chRuleMap[b.id]||[]).length);
+    else if (sortVal === 'proc-first')  arr.sort((a,b) => (_channelProcSettings[b.id]?1:0) - (_channelProcSettings[a.id]?1:0));
+    return arr;
+  };
+  activePipelines = sortCh(activePipelines);
+  inactiveCh = sortCh(inactiveCh);
 
   if (!_rulesCache.length && !allChannels.length) {
     el.innerHTML = '<div class="empty">No rules or channels configured yet. Add rules on the Rules page to get started.</div>';
     return;
   }
 
+  const showActive   = _flowFilter !== 'inactive';
+  const showInactive = _flowFilter !== 'active';
   let html = '';
 
-  if (activePipelines.length) {
-    html += '<div class="sh" style="margin-bottom:12px"><div><h3 style="margin:0">Active pipelines</h3><div class="sub">These channels are automated on every scan</div></div></div>';
+  if (showActive && activePipelines.length) {
+    html += '<div class="sh" style="margin-bottom:12px"><div><h3 style="margin:0">Active pipelines</h3><div class="sub">These channels run automatically on every scan</div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:28px">';
     for (const ch of activePipelines) {
       html += _pipelineCard(ch, chRuleMap[ch.id]||[], _channelProcSettings[ch.id]||null);
@@ -10529,8 +10622,8 @@ function renderFlows() {
     html += '</div>';
   }
 
-  if (inactiveRules.length || inactiveCh.length) {
-    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Enable to add to automated pipelines</div></div></div>';
+  if (showInactive && (inactiveRules.length || inactiveCh.length)) {
+    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Activate to add to automated pipelines</div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     inactiveRules.forEach(r => { html += _flowRuleCard(r, false); });
     inactiveCh.forEach(c => { html += _flowChannelCard(c, false); });
@@ -10538,6 +10631,36 @@ function renderFlows() {
   }
 
   el.innerHTML = html || '<div class="empty">No rules or channels yet.</div>';
+}
+
+function flowBtnClick(btn) {
+  const type   = btn.dataset.type;
+  const id     = btn.dataset.id;
+  const name   = btn.dataset.name;
+  const active = btn.dataset.active === '1';
+  if (active) {
+    const msg = type === 'channel'
+      ? 'Stop auto-routing all content matched to \u201c' + name + '\u201d? Rules targeting this channel will remain but won\u2019t run automatically.'
+      : 'Turn off auto-routing for rule \u201c' + name + '\u201d?';
+    document.getElementById('deactivate-modal-msg').textContent = msg;
+    _deactivatePending = type === 'channel'
+      ? () => toggleChannelAutoRoute(id, false)
+      : () => toggleRuleAutoRoute(Number(id), false);
+    document.getElementById('deactivate-modal').classList.add('on');
+  } else {
+    if (type === 'channel') toggleChannelAutoRoute(id, true);
+    else toggleRuleAutoRoute(Number(id), true);
+  }
+}
+
+function closeDeactivateModal() {
+  document.getElementById('deactivate-modal').classList.remove('on');
+  _deactivatePending = null;
+}
+
+async function execDeactivate() {
+  closeDeactivateModal();
+  if (_deactivatePending) await _deactivatePending();
 }
 async function loadChannelAutoRoute() {
   try {
@@ -11421,7 +11544,7 @@ const TOUR = [
 
   {title:'2. Enter your Plex address',
 
-   body:'Type the address of your Plex server &mdash; usually <code>http://192.168.1.x:32400</code>. This is what Routarr uses to scan your library for new content.',
+   body:'Enter your Plex server address, usually <code>http://192.168.1.x:32400</code>. This is what Routarr uses to scan your library for new content.',
 
    target:'#s-plex_url', action:null},
 
@@ -11433,7 +11556,7 @@ const TOUR = [
 
   {title:'4. Enter your Tunarr address',
 
-   body:'Type the address of your Tunarr server &mdash; usually <code>http://192.168.1.x:8000</code>. Once entered, click <strong>Detect</strong> next to Plex source ID to auto-fill that field.',
+   body:'Enter your Tunarr server address, usually <code>http://192.168.1.x:8000</code>. Then click <strong>Detect</strong> next to Plex source ID to auto-fill that field.',
 
    target:'#s-tunarr_url', action:null},
 
@@ -11445,19 +11568,19 @@ const TOUR = [
 
   {title:'6. Map your libraries',
 
-   body:'Scroll down to <strong>Library Mapping</strong>. For each Plex/Jellyfin library, pick the matching Tunarr library. Set <strong>Scan Priority</strong> on each row &mdash; use <em>Skip</em> on libraries like Music or Podcasts that you never want scanned. Click <strong>Save mapping</strong> when done.',
+   body:'Scroll down to <strong>Library Mapping</strong>. For each Plex/Jellyfin library, pick the matching Tunarr library. Set <strong>Scan Priority</strong>: use <em>Skip</em> on libraries like Music or Podcasts that you never want scanned. Click <strong>Save mapping</strong> when done.',
 
    target:'#lib-map-body', action:null},
 
   {title:'7. Create routing rules',
 
-   body:'Click <strong>Rules</strong> in the nav. Rules decide which Tunarr channel new content goes to. Routarr evaluates them highest-priority-first &mdash; first match wins.',
+   body:'Click <strong>Rules</strong> in the nav. Rules decide which Tunarr channel new content goes to. Routarr evaluates them highest-priority-first; first match wins.',
 
    target:'button.tab[onclick*="rules"]', action:()=>_tourNav('rules')},
 
   {title:'8. Add your first rule',
 
-   body:'Click <strong>+ Add rule</strong>. Pick a library, add genres to match (all must be present &mdash; AND logic), choose a Tunarr channel, and set a priority. Leave genres blank to match everything in the library.',
+   body:'Click <strong>+ Add rule</strong>. Pick a library, add genres to match (all must be present, AND logic), choose a Tunarr channel, and set a priority. Leave genres blank to match everything in the library.',
 
    target:'button[onclick="openAddRule()"]', action:null},
 
@@ -11469,13 +11592,13 @@ const TOUR = [
 
   {title:'10. The Media tab',
 
-   body:'Click <strong>Media</strong> in the nav. This shows everything Routarr has scanned from Plex/Jellyfin. Items show their matched channel &mdash; items labelled <em>no rule</em> need a rule created before they can be routed.',
+   body:'Click <strong>Media</strong> in the nav. This shows everything Routarr has scanned from Plex/Jellyfin. Items show their matched channel; items labelled <em>no rule</em> need a rule created before they can be routed.',
 
    target:'button.tab[onclick*="arrivals"]', action:()=>_tourNav('arrivals')},
 
   {title:'11. Trigger a scan',
 
-   body:'Click <strong>Check Plex Now</strong> to run a scan immediately. A C64-style animation plays while scanning; new items appear as they are found. Items auto-route if you enabled that in step 9.',
+   body:'Click <strong>Check Plex Now</strong> to start a scan. Scans can take a few minutes depending on library size and server speed. The scan is done and Routarr is ready to use again when the activity at the top stops. New items appear in the list as they are found.',
 
    target:'#scan-now-btn', action:null},
 
@@ -11527,7 +11650,19 @@ function _doTourStep() {
 
   if (s.action) { try { s.action(); } catch(e){} }
 
-  setTimeout(() => _placeTip(s), s.action ? 350 : 0);
+  setTimeout(() => {
+
+    if (s.target) {
+
+      const _el = document.querySelector(s.target);
+
+      if (_el) _el.scrollIntoView({behavior:'smooth', block:'center'});
+
+    }
+
+    setTimeout(() => _placeTip(s), s.target ? 380 : 0);
+
+  }, s.action ? 350 : 0);
 
 }
 
