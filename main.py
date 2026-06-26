@@ -546,6 +546,14 @@ def migrate_db():
 
             pass  # already exists
 
+        try:
+
+            db.execute("ALTER TABLE channel_proc_settings ADD COLUMN preset_name TEXT DEFAULT ''")
+
+        except Exception:
+
+            pass  # already exists
+
 migrate_db()
 
 
@@ -4642,6 +4650,8 @@ async def process_channel(channel_id: str, request: Request):
 
         ch_name    = body.get("channel_name") or channel_id
 
+        preset_nm  = str(body.get("preset_name") or "")
+
         async with httpx.AsyncClient() as c:
 
             items = await fetch_channel_lineup(c, channel_id)
@@ -4720,9 +4730,9 @@ async def process_channel(channel_id: str, request: Request):
 
                 "INSERT INTO channel_proc_settings"
 
-                " (channel_id,channel_name,dedupe,shuffle,pad_minutes,updated_at)"
+                " (channel_id,channel_name,dedupe,shuffle,pad_minutes,preset_name,updated_at)"
 
-                " VALUES(?,?,?,?,?,?)"
+                " VALUES(?,?,?,?,?,?,?)"
 
                 " ON CONFLICT(channel_id) DO UPDATE SET"
 
@@ -4730,9 +4740,11 @@ async def process_channel(channel_id: str, request: Request):
 
                 " shuffle=excluded.shuffle,pad_minutes=excluded.pad_minutes,"
 
+                " preset_name=excluded.preset_name,"
+
                 " updated_at=excluded.updated_at",
 
-                (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, int(time.time())))
+                (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, preset_nm, int(time.time())))
 
         return {"ok": True, "stats": stats}
 
@@ -4771,6 +4783,8 @@ async def get_channel_proc_settings():
         "shuffle": r["shuffle"],
 
         "pad_minutes": r["pad_minutes"],
+
+        "preset_name": r["preset_name"] if r["preset_name"] is not None else "",
 
         "updated_at": r["updated_at"]
 
@@ -5184,6 +5198,10 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 #clear-confirm-modal.on{display:flex}
 
+#deactivate-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center}
+
+#deactivate-modal.on{display:flex}
+
 .mbox{background:var(--s1);border:1px solid var(--bdr);border-radius:12px;padding:24px;width:480px;max-width:95vw}
 
 .mbox h3{font-size:14px;font-weight:600;margin-bottom:16px}
@@ -5595,7 +5613,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <h2>Auto Flows</h2>
 
-      <div class="sub">Content matching these flows is routed automatically on every scan. Toggle any flow to enable or disable it.</div>
+      <div class="sub">Flows build automatically as you create rules and process channels. Each card shows the complete routing and processing pipeline for a channel in one place. Activate flows to have Routarr apply them on every scan without any manual action.</div>
 
     </div>
 
@@ -5613,6 +5631,26 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <button class="btn p sm" onclick="routeAllNow()" title="Immediately route all pending items to their matched channels">⚡ Run All Now</button>
 
+    </div>
+
+  </div>
+
+  <div class="ch-sort-bar" id="flows-filter-bar">
+
+    <label>Sort</label>
+
+    <select id="flows-sort" onchange="renderFlows()">
+      <option value="name-asc">Channel A→Z</option>
+      <option value="name-desc">Channel Z→A</option>
+      <option value="rules-desc">Most rules</option>
+      <option value="rules-asc">Fewest rules</option>
+      <option value="proc-first">Processed first</option>
+    </select>
+
+    <div style="display:flex;gap:4px;margin-left:auto">
+      <button class="btn g sm flows-f-btn" data-f="all" onclick="setFlowFilter('all')">All</button>
+      <button class="btn g sm flows-f-btn" data-f="active" onclick="setFlowFilter('active')" style="opacity:.5">Active</button>
+      <button class="btn g sm flows-f-btn" data-f="inactive" onclick="setFlowFilter('inactive')" style="opacity:.5">Inactive</button>
     </div>
 
   </div>
@@ -6658,6 +6696,30 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
       <button class="btn g" onclick="closeProcModal()">Cancel</button>
 
       <button class="btn p" id="proc-run-btn" onclick="runProcess()">Process &amp; Save</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+
+<!-- Deactivate Flow Confirm Modal -->
+
+<div id="deactivate-modal" class="">
+
+  <div class="mbox" style="width:380px">
+
+    <h3>Deactivate this flow?</h3>
+
+    <p id="deactivate-modal-msg" style="font-size:13px;color:var(--muted);margin:0 0 20px"></p>
+
+    <div class="row" style="justify-content:flex-end;gap:8px">
+
+      <button class="btn g" onclick="closeDeactivateModal()">Cancel</button>
+
+      <button class="btn sm" style="background:var(--acc2);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer" onclick="execDeactivate()">Deactivate</button>
 
     </div>
 
@@ -9303,6 +9365,10 @@ function _applyProcSettingsToForm(s) {
 
 let _procPresets = [];
 
+let _flowFilter = 'all';
+
+let _deactivatePending = null;
+
 
 
 async function loadProcPresets() {
@@ -9476,6 +9542,8 @@ async function runProcess() {
     shuffle:     document.getElementById('proc-shuffle').value,
 
     pad_minutes: parseInt(document.getElementById('proc-pad').value) || 0,
+
+    preset_name: document.getElementById('proc-preset-name').value.trim(),
 
   };
 
@@ -10359,13 +10427,14 @@ async function loadFlows() {
   const el = document.getElementById('flows-body');
   if (el) el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes, procSetRes] = await Promise.all([
+    const [rulesRes, ruleArRes, chRes, chArRes, settingsRes, procSetRes, presetsRes] = await Promise.all([
       fetch('/api/routing').catch(()=>null),
       fetch('/api/routing/auto-route').catch(()=>null),
       fetch('/api/channels').catch(()=>null),
       fetch('/api/channels/auto-route').catch(()=>null),
       fetch('/api/settings').catch(()=>null),
       fetch('/api/channels/proc-settings').catch(()=>null),
+      fetch('/api/process-presets').catch(()=>null),
     ]);
     if (rulesRes) { const d = await rulesRes.json().catch(()=>[]); if (Array.isArray(d)) _rulesCache = d; }
     if (ruleArRes) { const d = await ruleArRes.json().catch(()=>({})); _autoRouteRules = new Set((d.enabled||[]).map(String)); }
@@ -10373,6 +10442,7 @@ async function loadFlows() {
     if (chArRes) { const d = await chArRes.json().catch(()=>({})); _autoRouteChannels = new Set(d.enabled||[]); }
     if (settingsRes) { const d = await settingsRes.json().catch(()=>({})); _autoRoute = (d.auto_route==='1'); updateAutoRouteUI(); }
     if (procSetRes) { const d = await procSetRes.json().catch(()=>({})); _channelProcSettings = d; }
+    if (presetsRes) { const d = await presetsRes.json().catch(()=>[]); if (Array.isArray(d)) _procPresets = d; }
   } catch(e) {}
   renderFlows();
 }
@@ -10396,7 +10466,7 @@ function _flowRuleCard(r, active) {
     +'<div style="font-weight:600;font-size:13px">'+escHtml(r.name)+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:3px">'+sectionPart+' &nbsp;→&nbsp; '+labelPart+' &nbsp;→&nbsp; <strong style="color:var(--txt)">'+escHtml(r.channel_name)+'</strong></div>'
     +'</div>'
-    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
 }
 
@@ -10416,12 +10486,12 @@ function _miniRuleCard(r, active) {
     ? r.label.split(',').map(g=>'<span class="pill" style="font-size:10px">'+escHtml(g.trim())+'</span>').join(' ')
     : '<span style="color:var(--muted);font-size:11px">any genre</span>';
   const btnStyle = active
-    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    ? 'background:var(--acc2);border:1px solid var(--acc2);color:#fff'
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bdr);flex-wrap:wrap">'
     +'<span style="font-size:9px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:3px;padding:1px 5px;flex-shrink:0">'+srcLabel+'</span>'
     +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+' — '+sectionPart+' → '+labelPart+'</div>'
-    +'<button onclick="toggleRuleAutoRoute('+r.id+','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
 }
 
@@ -10439,7 +10509,9 @@ function _pipelineCard(ch, rules, proc) {
 
   let procHtml;
   if (proc) {
+    const _presetBadge = proc.preset_name ? '<span class="pill" style="font-size:11px;background:var(--acc)22;color:var(--acc);font-weight:700">'+escHtml(proc.preset_name)+'</span> ' : '';
     procHtml = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +_presetBadge
       +(proc.dedupe ? '<span class="pill" style="font-size:11px">Dedupe</span>' : '')
       +'<span class="pill" style="font-size:11px">'+shuffleLabel(proc.shuffle)+'</span>'
       +(proc.pad_minutes>0 ? '<span class="pill" style="font-size:11px">'+proc.pad_minutes+'m pad</span>' : '')
@@ -10455,13 +10527,13 @@ function _pipelineCard(ch, rules, proc) {
   const borderColor = autoOn ? 'var(--acc)' : 'var(--bdr)';
   const opacity = autoOn ? '' : ';opacity:.75';
   const btnStyle = autoOn
-    ? 'background:var(--acc);border:1px solid var(--acc);color:var(--bg)'
+    ? 'background:var(--acc2);border:1px solid var(--acc2);color:#fff'
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div class="scard" style="padding:0;border-left:3px solid '+borderColor+opacity+';overflow:hidden">'
     +'<div style="padding:10px 14px;display:flex;align-items:center;gap:10px">'
     +'<span style="font-size:10px;font-weight:700;color:var(--muted);background:var(--s3);border-radius:4px;padding:2px 6px;flex-shrink:0">CH</span>'
     +'<div style="flex:1;font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
-    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!autoOn)+')" style="flex-shrink:0;'+btnStyle+';padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(autoOn?'⚡ Auto On':'Auto Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="channel" data-id="'+escHtml(ch.id)+'" data-name="'+escHtml(ch.name)+'" data-active="'+(autoOn?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(autoOn?'Deactivate':'Activate')+'</button>'
     +'</div>'
     +'<div style="padding:6px 14px;border-top:1px solid var(--bdr)">'
     +'<div style="font-size:10px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px">Routing rules</div>'
@@ -10485,13 +10557,24 @@ function _flowChannelCard(ch, active) {
     +'<div style="font-weight:600;font-size:13px">'+escHtml(ch.name)+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:3px">Any new content matched to this channel → auto-route</div>'
     +'</div>'
-    +'<button onclick="toggleChannelAutoRoute(\''+escHtml(ch.id)+'\','+(!active)+')" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
+    +'<button onclick="flowBtnClick(this)" data-type="channel" data-id="'+escHtml(ch.id)+'" data-name="'+escHtml(ch.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">'+(active?'Deactivate':'Activate')+'</button>'
     +'</div>';
+}
+
+function setFlowFilter(v) {
+  _flowFilter = v;
+  document.querySelectorAll('.flows-f-btn').forEach(b => {
+    b.style.opacity = b.dataset.f === v ? '1' : '.5';
+    b.style.fontWeight = b.dataset.f === v ? '600' : '';
+  });
+  renderFlows();
 }
 
 function renderFlows() {
   const el = document.getElementById('flows-body');
   if (!el) return;
+
+  const sortVal = (document.getElementById('flows-sort') || {}).value || 'name-asc';
 
   const chRuleMap = {};
   for (const r of _rulesCache) {
@@ -10504,20 +10587,34 @@ function renderFlows() {
     if (_autoRouteRules.has(String(r.id))) autoChIds.add(r.channel_id);
   }
 
-  const activePipelines = allChannels.filter(c => autoChIds.has(c.id));
-  const inactiveCh      = allChannels.filter(c => !autoChIds.has(c.id));
+  let activePipelines = allChannels.filter(c => autoChIds.has(c.id));
+  let inactiveCh      = allChannels.filter(c => !autoChIds.has(c.id));
   const coveredRuleIds  = new Set(activePipelines.flatMap(c => (chRuleMap[c.id]||[]).map(r=>r.id)));
   const inactiveRules   = _rulesCache.filter(r => !_autoRouteRules.has(String(r.id)) && !coveredRuleIds.has(r.id));
+
+  const sortCh = arr => {
+    arr = [...arr];
+    if (sortVal === 'name-asc')    arr.sort((a,b) => a.name.localeCompare(b.name));
+    else if (sortVal === 'name-desc')   arr.sort((a,b) => b.name.localeCompare(a.name));
+    else if (sortVal === 'rules-desc')  arr.sort((a,b) => (chRuleMap[b.id]||[]).length - (chRuleMap[a.id]||[]).length);
+    else if (sortVal === 'rules-asc')   arr.sort((a,b) => (chRuleMap[a.id]||[]).length - (chRuleMap[b.id]||[]).length);
+    else if (sortVal === 'proc-first')  arr.sort((a,b) => (_channelProcSettings[b.id]?1:0) - (_channelProcSettings[a.id]?1:0));
+    return arr;
+  };
+  activePipelines = sortCh(activePipelines);
+  inactiveCh = sortCh(inactiveCh);
 
   if (!_rulesCache.length && !allChannels.length) {
     el.innerHTML = '<div class="empty">No rules or channels configured yet. Add rules on the Rules page to get started.</div>';
     return;
   }
 
+  const showActive   = _flowFilter !== 'inactive';
+  const showInactive = _flowFilter !== 'active';
   let html = '';
 
-  if (activePipelines.length) {
-    html += '<div class="sh" style="margin-bottom:12px"><div><h3 style="margin:0">Active pipelines</h3><div class="sub">These channels are automated on every scan</div></div></div>';
+  if (showActive && activePipelines.length) {
+    html += '<div class="sh" style="margin-bottom:12px"><div><h3 style="margin:0">Active pipelines</h3><div class="sub">These channels run automatically on every scan</div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:28px">';
     for (const ch of activePipelines) {
       html += _pipelineCard(ch, chRuleMap[ch.id]||[], _channelProcSettings[ch.id]||null);
@@ -10525,8 +10622,8 @@ function renderFlows() {
     html += '</div>';
   }
 
-  if (inactiveRules.length || inactiveCh.length) {
-    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Enable to add to automated pipelines</div></div></div>';
+  if (showInactive && (inactiveRules.length || inactiveCh.length)) {
+    html += '<div class="sh" style="margin-bottom:10px"><div><h3 style="margin:0;color:var(--muted)">Inactive</h3><div class="sub">Activate to add to automated pipelines</div></div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     inactiveRules.forEach(r => { html += _flowRuleCard(r, false); });
     inactiveCh.forEach(c => { html += _flowChannelCard(c, false); });
@@ -10534,6 +10631,36 @@ function renderFlows() {
   }
 
   el.innerHTML = html || '<div class="empty">No rules or channels yet.</div>';
+}
+
+function flowBtnClick(btn) {
+  const type   = btn.dataset.type;
+  const id     = btn.dataset.id;
+  const name   = btn.dataset.name;
+  const active = btn.dataset.active === '1';
+  if (active) {
+    const msg = type === 'channel'
+      ? 'Stop auto-routing all content matched to \u201c' + name + '\u201d? Rules targeting this channel will remain but won\u2019t run automatically.'
+      : 'Turn off auto-routing for rule \u201c' + name + '\u201d?';
+    document.getElementById('deactivate-modal-msg').textContent = msg;
+    _deactivatePending = type === 'channel'
+      ? () => toggleChannelAutoRoute(id, false)
+      : () => toggleRuleAutoRoute(Number(id), false);
+    document.getElementById('deactivate-modal').classList.add('on');
+  } else {
+    if (type === 'channel') toggleChannelAutoRoute(id, true);
+    else toggleRuleAutoRoute(Number(id), true);
+  }
+}
+
+function closeDeactivateModal() {
+  document.getElementById('deactivate-modal').classList.remove('on');
+  _deactivatePending = null;
+}
+
+async function execDeactivate() {
+  closeDeactivateModal();
+  if (_deactivatePending) await _deactivatePending();
 }
 async function loadChannelAutoRoute() {
   try {
