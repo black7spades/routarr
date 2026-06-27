@@ -73,11 +73,9 @@ Routarr normally scans on a schedule. To make it react the moment something land
 
 - **Routing rules**: match by Plex/Jellyfin library, genre include/exclude, label include/exclude, title pattern; priority-ordered, first match wins
 - **Auto-flows**: activate a flow on any channel and Routarr routes matched items automatically on every scan
-- **Filler list support**: route to Tunarr filler lists as well as regular channels
 - **Plex and Jellyfin**: use either or both as your media source
-- **Process presets**: save per-channel processing configs (codec, resolution, etc.) and apply them in bulk
+- **Process presets**: save per-channel processing configs (play order and time padding) and apply them in bulk
 - **Themes**: generate a colour palette from your channel idents or pick from built-in presets
-- **Authentication**: optional username + password login
 - **Guided setup tour**: walks through first-time configuration in the UI
 
 ---
@@ -104,8 +102,6 @@ The raw template is at [`unraid-template.xml`](https://raw.githubusercontent.com
 ```bash
 docker compose pull && docker compose up -d
 ```
-
-The database schema is migrated automatically on startup. A backup copy is written to `/data/routarr.db.bak` before each migration.
 
 ---
 
