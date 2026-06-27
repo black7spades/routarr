@@ -5,7 +5,7 @@
 #   docker compose up -d
 #
 # Then open http://localhost:6942 and complete setup in Settings.
-# Credentials can also be pre-filled via the environment variables below.
+# All values below can also be entered through the Settings UI.
 
 services:
   routarr:
@@ -19,13 +19,22 @@ services:
     volumes:
       - routarr-data:/data
     environment:
-      # Optional — pre-fill settings on first start.
-      # All values can also be entered through the Settings UI.
-      - PLEX_URL=            # e.g. http://192.168.1.10:32400
-      - PLEX_TOKEN=          # Your Plex authentication token
+      # Required
       - TUNARR_URL=          # e.g. http://192.168.1.10:8000
-      - JELLYFIN_URL=        # e.g. http://192.168.1.10:8096  (optional)
-      - JELLYFIN_API_KEY=    # Your Jellyfin API key           (optional)
+
+      # Media sources — fill in whichever you use (at least one required)
+
+      # Plex
+      - PLEX_URL=            # e.g. http://192.168.1.10:32400
+      - PLEX_TOKEN=          # your Plex auth token
+
+      # Jellyfin
+      - JELLYFIN_URL=        # e.g. http://192.168.1.10:8096
+      - JELLYFIN_API_KEY=    # your Jellyfin API key
+
+      # Optional
+      - PLEX_SOURCE_ID=      # auto-detected if blank
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6942/api/health')"]
       interval: 30s
