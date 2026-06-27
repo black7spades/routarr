@@ -4,7 +4,7 @@ Routarr — Plex → Tunarr routing companion
 
 Runs on port 6942. All config via the built-in Settings UI.
 
-State persists in SQLite at /data/pilotarr.db
+State persists in SQLite at /data/routarr.db
 
 
 
@@ -70,7 +70,7 @@ def _tunarr_img(pic: str, base: str) -> str:
 
 
 
-DB_PATH = Path("/data/pilotarr.db")
+DB_PATH = Path("/data/routarr.db")
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -280,7 +280,7 @@ init_db()
 
 def backup_db():
 
-    """Copy pilotarr.db to pilotarr.db.bak on startup (rolling single backup)."""
+    """Copy routarr.db to routarr.db.bak on startup (rolling single backup)."""
 
     try:
 
@@ -288,7 +288,7 @@ def backup_db():
 
         src = DB_PATH
 
-        bak = DB_PATH.parent / "pilotarr.db.bak"
+        bak = DB_PATH.parent / "routarr.db.bak"
 
         if src.exists():
 
@@ -389,6 +389,32 @@ def _auth_on() -> bool:
     u, p = _auth_cfg()
 
     return bool(u and p)
+
+
+
+def _seed_default_auth():
+
+    """Seed admin/routarr if no credentials are set yet."""
+
+    u, p = _auth_cfg()
+
+    if u or p:
+
+        return
+
+    salt = secrets.token_hex(16)
+
+    pw_hash = salt + ':' + hashlib.pbkdf2_hmac('sha256', b'routarr', salt.encode(), 100000).hex()
+
+    with db_conn() as db:
+
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('auth_username','admin')")
+
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('auth_password_hash',?)", (pw_hash,))
+
+
+
+_seed_default_auth()
 
 
 
@@ -2806,7 +2832,7 @@ class _AuthMW(BaseHTTPMiddleware):
 
             return await call_next(request)
 
-        token = request.cookies.get('pilotarr_session')
+        token = request.cookies.get('routarr_session')
 
         if not token or token not in _sessions:
 
@@ -3435,7 +3461,7 @@ async def post_login(request: Request):
 
             resp = RedirectResponse('/', status_code=303)
 
-        resp.set_cookie('pilotarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
+        resp.set_cookie('routarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
 
         return resp
 
@@ -3455,7 +3481,7 @@ async def post_login(request: Request):
 
 async def logout(request: Request):
 
-    token = request.cookies.get('pilotarr_session')
+    token = request.cookies.get('routarr_session')
 
     if token:
 
@@ -3467,7 +3493,7 @@ async def logout(request: Request):
 
     resp = RedirectResponse('/login' if _auth_on() else '/', status_code=302)
 
-    resp.delete_cookie('pilotarr_session')
+    resp.delete_cookie('routarr_session')
 
     return resp
 
@@ -4407,6 +4433,8 @@ async def scan_status():
         "done_libs":        _scan_state.get("done_libs", 0),
 
         "total_libs":       _scan_state.get("total_libs", 0),
+
+        "first_scan_done":  bool(cfg("first_scan_done")),
 
     }
 
@@ -6774,6 +6802,34 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 <!-- Deactivate Flow Confirm Modal -->
+
+<!-- First-scan welcome modal -->
+
+<div id="first-scan-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.93);flex-direction:column;align-items:center;justify-content:center;gap:0">
+
+  <div style="text-align:center;max-width:540px;padding:0 28px">
+
+    <div id="fsm-quote" style="font-family:monospace;font-size:14px;font-weight:bold;letter-spacing:.08em;min-height:2.6em;transition:opacity .5s ease;opacity:1;margin-bottom:32px;color:var(--acc)"></div>
+
+    <p style="font-size:15px;line-height:1.8;color:var(--text);margin-bottom:8px">Your first scan is working through your entire library.<br>Go make a cup of your favourite hot beverage and enjoy a slice of cake while it all loads up.</p>
+
+    <p style="font-size:12px;color:var(--muted);margin-bottom:32px">This only happens once &mdash; subsequent scans look back 14 days.</p>
+
+    <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:18px">Would you like the guided tour when everything is ready?</p>
+
+    <div style="display:flex;gap:14px;justify-content:center">
+
+      <button onclick="fsmChoice(true)"  style="background:var(--acc);border:none;color:var(--bg);padding:11px 32px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.05em">Yes please</button>
+
+      <button onclick="fsmChoice(false)" style="background:none;border:1px solid var(--bdr);color:var(--muted);padding:11px 32px;border-radius:4px;font-size:14px;cursor:pointer">No thanks</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
 
 <div id="deactivate-modal" class="">
 
@@ -10023,7 +10079,21 @@ async function updateScanStatus() {
 
     }
 
-    if (!s.scanning && _wasActive) { stopC64(); loadArrivals(true); return; }
+    if (!s.scanning && _wasActive) {
+
+      stopC64();
+
+      // If this was the first scan completing, honour the tour choice
+
+      if (s.first_scan_done && _fsmDismissed && _fsmWantTour) setTimeout(startTour, 800);
+
+      else if (s.first_scan_done && !_fsmDismissed) _fsmHide();
+
+      loadArrivals(true);
+
+      return;
+
+    }
 
     const sub = document.getElementById('arr-sub');
 
@@ -11611,6 +11681,102 @@ async function saveRule() {
 }
 
 
+
+
+
+// ── First-scan modal ----------------------------------------------------------------
+
+let _fsmWantTour = false;
+
+let _fsmDismissed = false;
+
+let _fsmQTimer = null;
+
+
+
+function _fsmStartQuotes() {
+
+  const el = document.getElementById('fsm-quote');
+
+  if (!el) return;
+
+  let qi = Math.floor(Math.random() * _C64Q.length), ci = 0;
+
+  function next() {
+
+    const e = document.getElementById('fsm-quote');
+
+    if (!e) { clearInterval(_fsmQTimer); _fsmQTimer = null; return; }
+
+    e.style.opacity = '0';
+
+    setTimeout(() => {
+
+      const e2 = document.getElementById('fsm-quote');
+
+      if (!e2) return;
+
+      qi = (qi + 1) % _C64Q.length;
+
+      ci = (ci + 1) % _C64C.length;
+
+      e2.textContent = _C64Q[qi];
+
+      e2.style.color = _C64C[ci];
+
+      e2.style.opacity = '1';
+
+    }, 500);
+
+  }
+
+  next();
+
+  _fsmQTimer = setInterval(next, 3500);
+
+}
+
+
+
+function _fsmHide() {
+
+  if (_fsmQTimer) { clearInterval(_fsmQTimer); _fsmQTimer = null; }
+
+  const m = document.getElementById('first-scan-modal');
+
+  if (m) m.style.display = 'none';
+
+}
+
+
+
+function fsmChoice(wantTour) {
+
+  _fsmWantTour = wantTour;
+
+  _fsmDismissed = true;
+
+  _fsmHide();
+
+}
+
+
+
+// Show modal immediately if first scan hasn't completed yet
+
+fetch('/api/scan/status').then(r => r.json()).then(s => {
+
+  if (!s.first_scan_done) {
+
+    const m = document.getElementById('first-scan-modal');
+
+    if (m) m.style.display = 'flex';
+
+    _fsmStartQuotes();
+
+  }
+
+}).catch(() => {});
 
 
 
