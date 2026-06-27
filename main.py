@@ -6606,7 +6606,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <div id="toast"></div>
 
-<div id="app-footer" style="position:fixed;bottom:12px;right:16px;font-size:11px;color:var(--muted);z-index:50;pointer-events:none;user-select:none">v<span id="footer-ver">…</span></div>
+<div id="app-footer" style="position:fixed;bottom:12px;right:16px;font-size:11px;color:var(--muted);z-index:50;user-select:none;display:flex;align-items:center;gap:10px"><a href="https://github.com/black7spades/routarr" target="_blank" rel="noopener noreferrer" style="color:var(--muted);text-decoration:none;pointer-events:auto" title="Routarr on GitHub">github.com/black7spades/routarr</a><span style="pointer-events:none">v<span id="footer-ver">…</span></span></div>
 
 
 

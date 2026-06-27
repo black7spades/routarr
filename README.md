@@ -80,6 +80,23 @@ Routarr normally scans on a schedule. To make it react the moment something land
 
 ---
 
+## Unraid
+
+Install via Community Applications or add the template manually:
+
+1. In the Unraid UI go to **Docker → Add Container → Template repositories** and add:
+   ```
+   https://raw.githubusercontent.com/black7spades/routarr/main/
+   ```
+2. Search Community Applications for **Routarr**.
+3. Fill in your Tunarr URL and at least one of Plex or Jellyfin, then apply.
+
+Data persists in `/mnt/user/appdata/routarr`. The WebUI opens on port **6942**.
+
+The raw template is at [`unraid-template.xml`](https://raw.githubusercontent.com/black7spades/routarr/main/unraid-template.xml) if you want to add the container manually.
+
+---
+
 ## Upgrading
 
 ```bash
