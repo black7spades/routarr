@@ -1,6 +1,6 @@
 # Routarr
 
-So you've got your channels set up in Tunarr, playing your media from Plex and/or Jellyfin. But that channel is frozen in time. What if you could route new stuff from your media server into Tunarr automagically? 
+So you've got your channels set up in Tunarr, playing your media from Plex and/or Jellyfin. But what happens when new stuff lands on your server? That channel you made in Tunarr doesn't auto-update. Now you have to click through a bunch of menus just to update your channel and fill it with the latest stuff. Ain't nobody got time for that. What if you could route new stuff from your media server into Tunarr automagically? 
 
 Now you can, with Routarr! Define routing rules (match by genre, label, title, or library), and Routarr automagically drops matched items into the right Tunarr channel whenever something new lands on your server. Set everything to auto, and you'll never have to flip around between your media server and Tunarr's settings ever again!
 
