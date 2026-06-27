@@ -18,6 +18,10 @@ Optional env vars (pre-fill empty settings on first start):
 
   TUNARR_URL         http://192.168.1.x:8000
 
+  JELLYFIN_URL       http://192.168.1.x:8096   (optional)
+
+  JELLYFIN_API_KEY   your-jellyfin-api-key      (optional)
+
 
 """
 
@@ -247,6 +251,10 @@ def seed_from_env():
         "plex_source_id":   os.environ.get("PLEX_SOURCE_ID", ""),
 
         "tunarr_url":       os.environ.get("TUNARR_URL", ""),
+
+        "jellyfin_url":     os.environ.get("JELLYFIN_URL", ""),
+
+        "jellyfin_api_key": os.environ.get("JELLYFIN_API_KEY", ""),
 
     }
 
