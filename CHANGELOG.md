@@ -34,13 +34,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Full CSS custom-property theme system: accent, accent2, green, yellow, blue, surface (×3), text, muted, border
 - `applyPalette(id)` saves to localStorage and re-applies on every page load
 - Login page: rotating channel ident as background image (randomly selected from Tunarr lineup on each load)
-- `/api/channel-idents` endpoint (auth-exempt) — returns channel id, name and ident URL; skips adult channels (69, 96, 97, 1069+) and ChatGPT-placeholder idents
+- `/api/channel-idents` endpoint (auth-exempt) — returns channel id, name and ident URL
 - `/api/versions` endpoint — reports Routarr, Plex, Tunarr, and Jellyfin version strings
 - Changelog section in Settings showing version history
 - Nine additional palette presets: Powerbeam!, Channel Who, Channel X, Station 666, Station 42, Station 1845, Cigarette Burns, Sugoi!, Midnight
 
 ### Security
-- SSH / SFTP credentials no longer stored in the database after deploy
+- Removed internal deploy credentials from the database
 
 ---
 

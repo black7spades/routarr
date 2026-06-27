@@ -53,7 +53,7 @@ def _tunarr_img(pic: str, base: str) -> str:
     """Rewrite any host in a Tunarr image path to use our configured base URL.
 
     Tunarr sometimes embeds its own public hostname in image URLs (e.g.
-    http://tunarr.kandyland.one/images/...) even when Routarr has it stored
+    http://your-tunarr-host/images/...) even when Routarr has it stored
     as an internal IP.  By stripping the foreign host and prepending our
     configured base we guarantee the proxy allowlist check passes."""
     if not pic:

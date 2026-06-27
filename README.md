@@ -30,11 +30,13 @@ services:
     volumes:
       - routarr-data:/data
     environment:
+      # Required
+      - TUNARR_URL=          # e.g. http://192.168.1.10:8000
+      # Fill in whichever you use (at least one required)
       - PLEX_URL=            # e.g. http://192.168.1.10:32400
       - PLEX_TOKEN=          # your Plex auth token
-      - TUNARR_URL=          # e.g. http://192.168.1.10:8000
-      - JELLYFIN_URL=        # optional
-      - JELLYFIN_API_KEY=    # optional
+      - JELLYFIN_URL=        # e.g. http://192.168.1.10:8096
+      - JELLYFIN_API_KEY=    # your Jellyfin API key
 
 volumes:
   routarr-data:
@@ -46,10 +48,10 @@ All environment variables are optional: you can enter everything through the Set
 
 ## First-run setup
 
-1. **Settings → Connections**: enter your Plex URL, Plex token, and Tunarr URL, then click **Test connections**.
-2. **Settings → Library Mapping**: click **Auto-configure from Tunarr** to map your Plex libraries to Tunarr's library IDs.
-3. **Rules**: create at least one routing rule. Each rule targets a Plex/Jellyfin library and filters by genre or label; the first matching rule wins.
-4. **Media**: hit **Check Plex Now** to run the first scan and see what's pending.
+1. **Settings → Connections**: enter your Tunarr URL and your Plex URL + token and/or Jellyfin URL + API key, then click **Test connections**.
+2. **Settings → Library Mapping**: click **Auto-configure from Tunarr** to map your libraries to Tunarr's library IDs.
+3. **Rules**: create at least one routing rule. Each rule targets a library and filters by genre or label; the first matching rule wins.
+4. **Media**: hit **Scan Now** to run the first scan and see what's pending.
 5. **Flows**: optionally activate a flow on any channel to have matched items routed automatically on each scan.
 
 ### Getting your Plex token
@@ -70,7 +72,7 @@ Routarr normally scans on a schedule. To make it react the moment something land
 - **Routing rules**: match by Plex/Jellyfin library, genre include/exclude, label include/exclude, title pattern; priority-ordered, first match wins
 - **Auto-flows**: activate a flow on any channel and Routarr routes matched items automatically on every scan
 - **Filler list support**: route to Tunarr filler lists as well as regular channels
-- **Jellyfin**: works as a second source alongside or instead of Plex
+- **Plex and Jellyfin**: use either or both as your media source
 - **Process presets**: save per-channel processing configs (codec, resolution, etc.) and apply them in bulk
 - **Themes**: generate a colour palette from your channel idents or pick from built-in presets
 - **Authentication**: optional username + password login
