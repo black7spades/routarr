@@ -1,10 +1,10 @@
 """
 
-Routarr — Plex → Tunarr routing companion
+Routarr: Plex to Tunarr routing companion
 
 Runs on port 6942. All config via the built-in Settings UI.
 
-State persists in SQLite at /data/pilotarr.db
+State persists in SQLite at /data/routarr.db
 
 
 
@@ -17,6 +17,10 @@ Optional env vars (pre-fill empty settings on first start):
   PLEX_SOURCE_ID     auto-detected if blank
 
   TUNARR_URL         http://192.168.1.x:8000
+
+  JELLYFIN_URL       http://192.168.1.x:8096   (optional)
+
+  JELLYFIN_API_KEY   your-jellyfin-api-key      (optional)
 
 
 """
@@ -66,7 +70,7 @@ def _tunarr_img(pic: str, base: str) -> str:
 
 
 
-DB_PATH = Path("/data/pilotarr.db")
+DB_PATH = Path("/data/routarr.db")
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -248,6 +252,10 @@ def seed_from_env():
 
         "tunarr_url":       os.environ.get("TUNARR_URL", ""),
 
+        "jellyfin_url":     os.environ.get("JELLYFIN_URL", ""),
+
+        "jellyfin_api_key": os.environ.get("JELLYFIN_API_KEY", ""),
+
     }
 
     with db_conn() as db:
@@ -272,7 +280,7 @@ init_db()
 
 def backup_db():
 
-    """Copy pilotarr.db to pilotarr.db.bak on startup (rolling single backup)."""
+    """Copy routarr.db to routarr.db.bak on startup (rolling single backup)."""
 
     try:
 
@@ -280,7 +288,7 @@ def backup_db():
 
         src = DB_PATH
 
-        bak = DB_PATH.parent / "pilotarr.db.bak"
+        bak = DB_PATH.parent / "routarr.db.bak"
 
         if src.exists():
 
@@ -381,6 +389,32 @@ def _auth_on() -> bool:
     u, p = _auth_cfg()
 
     return bool(u and p)
+
+
+
+def _seed_default_auth():
+
+    """Seed admin/routarr if no credentials are set yet."""
+
+    u, p = _auth_cfg()
+
+    if u or p:
+
+        return
+
+    salt = secrets.token_hex(16)
+
+    pw_hash = salt + ':' + hashlib.pbkdf2_hmac('sha256', b'routarr', salt.encode(), 100000).hex()
+
+    with db_conn() as db:
+
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('auth_username','admin')")
+
+        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('auth_password_hash',?)", (pw_hash,))
+
+
+
+_seed_default_auth()
 
 
 
@@ -855,7 +889,7 @@ async def plex_get(client, path, params=None):
 
     if not base:
 
-        raise ValueError("Plex URL not configured — go to Settings")
+        raise ValueError("Plex URL not configured. Go to Settings.")
 
     # Send the token as a header, not a query param, so it doesn't appear in
     # web server access logs or browser history.
@@ -1050,7 +1084,7 @@ async def plex_new_content(client, days=14):
             section_attrs.append(attrs)
 
         # asyncio.gather fires all the HTTP requests at the same time and
-        # waits for all of them to finish — much faster than sequential awaits.
+        # waits for all of them to finish, much faster than sequential awaits.
         genres_list = await asyncio.gather(
             *[plex_item_labels(client, a["ratingKey"]) for a in section_attrs]
         )
@@ -1127,7 +1161,7 @@ async def jf_get(client, path, params=None):
 
     if not base or not key:
 
-        raise ValueError("Jellyfin not configured — add jellyfin_url + jellyfin_api_key in Settings")
+        raise ValueError("Jellyfin not configured. Add jellyfin_url and jellyfin_api_key in Settings.")
 
     r = await client.get(
 
@@ -1377,7 +1411,7 @@ async def jellyfin_new_content(client, days: int = 14) -> list:
 
             if added_ts and added_ts < cutoff_ts:
 
-                break   # sorted desc — once we're past cutoff, stop
+                break   # sorted desc; once past cutoff, stop
 
 
 
@@ -1455,7 +1489,7 @@ async def tunarr_lib_index(client, lib_id):
 
     if not tunarr:
 
-        raise ValueError("Tunarr URL not configured — go to Settings")
+        raise ValueError("Tunarr URL not configured. Go to Settings.")
 
     r = await client.get(f"{tunarr}/api/media-libraries/{lib_id}/programs", timeout=120)
 
@@ -1467,7 +1501,7 @@ async def tunarr_lib_index(client, lib_id):
 
         for ident in p.get("program", {}).get("identifiers", []):
 
-            # Index by plex ratingKey — type=="plex" is the right discriminator;
+            # Index by plex ratingKey (type=="plex" is the right discriminator);
 
             # do NOT filter by sourceId because plex_source_id may be stale/wrong.
 
@@ -1493,7 +1527,7 @@ async def tunarr_channels(client):
 
     if not tunarr:
 
-        raise ValueError("Tunarr URL not configured — go to Settings")
+        raise ValueError("Tunarr URL not configured. Go to Settings.")
 
     last_exc = None
 
@@ -1613,7 +1647,7 @@ async def fetch_channel_lineup(client, channel_id: str) -> list:
 
         if raw is None:
 
-            raise ValueError(f"Unexpected programming response — keys: {list(data.keys())}")
+            raise ValueError(f"Unexpected programming response (keys: {list(data.keys())})")
 
     # Normalise items: some endpoints nest program details under "program" sub-object
 
@@ -1733,7 +1767,7 @@ def pp_shuffle(items: list, show_groups: dict, mode: str) -> list:
 
         return result
 
-    return content  # mode=='none' but called incorrectly — return as-is
+    return content  # mode=='none' but called incorrectly; return as-is
 
 
 
@@ -1947,7 +1981,7 @@ async def route_item(client, rk, section_id, labels, override_channel_id=None, t
 
     if not new_lineup:
 
-        # Everything we'd add is already there — treat as success
+        # Everything we'd add is already there; treat as success
 
         mark_routed(rk, channel_id, channel_name)
 
@@ -2353,13 +2387,13 @@ async def _run_scan_once():
 
         _cache.pop(f"jf_new_{days}", None)
 
-        # Phase 1 — sync Tunarr libraries (progress bar shows Tunarr phase)
+        # Phase 1: sync Tunarr libraries (progress bar shows Tunarr phase)
 
         await _do_tunarr_sync()
 
 
 
-        # Phase 2 — scan Plex / JF (progress bar switches to Plex lib names)
+        # Phase 2: scan Plex / JF (progress bar switches to Plex lib names)
 
         async with httpx.AsyncClient() as c:
 
@@ -2587,7 +2621,7 @@ async def _check_channel_health():
 
                     status = "empty"
 
-                    detail = "No upcoming programming — channel may stop"
+                    detail = "No upcoming programming; channel may stop"
 
                 else:
 
@@ -2798,7 +2832,7 @@ class _AuthMW(BaseHTTPMiddleware):
 
             return await call_next(request)
 
-        token = request.cookies.get('pilotarr_session')
+        token = request.cookies.get('routarr_session')
 
         if not token or token not in _sessions:
 
@@ -2827,7 +2861,7 @@ class _SecurityHeadersMW(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # Don't let the browser guess the file type — use what the server declares.
+        # Don't let the browser guess the file type; use what the server declares.
         response.headers["X-Content-Type-Options"] = "nosniff"
 
         # Prevent this page from being embedded in an iframe on another site
@@ -3349,7 +3383,7 @@ async def post_login(request: Request):
     attempts = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
     if len(attempts) >= _LOGIN_MAX_FAILS:
         logger.warning(f"Login rate limit hit for {ip}")
-        return JSONResponse({'error': 'Too many failed attempts — try again later'}, status_code=429)
+        return JSONResponse({'error': 'Too many failed attempts. Try again later.'}, status_code=429)
 
     try:
 
@@ -3427,7 +3461,7 @@ async def post_login(request: Request):
 
             resp = RedirectResponse('/', status_code=303)
 
-        resp.set_cookie('pilotarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
+        resp.set_cookie('routarr_session', token, httponly=True, samesite='lax', max_age=_SESSION_TTL)
 
         return resp
 
@@ -3447,7 +3481,7 @@ async def post_login(request: Request):
 
 async def logout(request: Request):
 
-    token = request.cookies.get('pilotarr_session')
+    token = request.cookies.get('routarr_session')
 
     if token:
 
@@ -3459,7 +3493,7 @@ async def logout(request: Request):
 
     resp = RedirectResponse('/login' if _auth_on() else '/', status_code=302)
 
-    resp.delete_cookie('pilotarr_session')
+    resp.delete_cookie('routarr_session')
 
     return resp
 
@@ -3575,7 +3609,7 @@ async def put_settings(request: Request):
 
         if v == "••••••••":
 
-            continue  # masked sentinel — user didn't change it, leave DB value alone
+            continue  # masked sentinel; user didn't change it, leave DB value alone
 
         if k in _URL_SETTINGS and not _valid_url(v):
 
@@ -3780,7 +3814,7 @@ async def get_routing():
 def _conflicting_rules(section_id: str, label: str, source: str, exclude_id: int = None) -> list[str]:
     """Return names of existing rules that match the exact same section+label+source combination.
 
-    An exact match means two rules would always fire for the same items — one of
+    An exact match means two rules would always fire for the same items; one of
     them will silently shadow the other depending on priority.
     """
     with db_conn() as db:
@@ -4400,6 +4434,8 @@ async def scan_status():
 
         "total_libs":       _scan_state.get("total_libs", 0),
 
+        "first_scan_done":  bool(cfg("first_scan_done")),
+
     }
 
 
@@ -4412,7 +4448,7 @@ async def scan_now_ep(request: Request):
 
     if not _rate_ok(ip, "scan", 3, 60):
 
-        return JSONResponse({"error": "Too many scan requests — wait a moment"}, status_code=429)
+        return JSONResponse({"error": "Too many scan requests. Wait a moment."}, status_code=429)
 
     asyncio.create_task(_run_scan_once())
 
@@ -4482,7 +4518,7 @@ async def route_auto(request: Request, days: int = 14):
 
     if not _rate_ok(ip, "route_auto", 5, 60):
 
-        return JSONResponse({"error": "Too many route requests — wait a moment"}, status_code=429)
+        return JSONResponse({"error": "Too many route requests. Wait a moment."}, status_code=429)
 
     try:
 
@@ -4492,7 +4528,7 @@ async def route_auto(request: Request, days: int = 14):
 
             results = []
 
-            # Skip items already routed — only route items that have a target and aren't done
+            # Skip items already routed; only route items that have a target and aren't done
 
             pending = [i for i in items if i["targetChannel"] and not i.get("alreadyRouted")]
 
@@ -4550,7 +4586,7 @@ async def route_one(rk: str, section_id: str, labels: str = "", channel_id: str 
 
 async def route_resolve(section_id: str, labels: str = ""):
 
-    """Return which channel new genres would route to — no side effects."""
+    """Return which channel new genres would route to (no side effects)."""
 
     label_list = [l.strip() for l in labels.split(",") if l.strip()] if labels else []
 
@@ -5519,7 +5555,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <select id="arr-bulk-actions" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="onBulkAction(this)"><option value="">Actions…</option><option value="skip">&#8960; Skip (don't route)</option><option value="clear">&#10005; Clear associations</option></select>
 
-    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="onBulkChannelChange()"><option value="">— route to… —</option></select>
+    <select id="arr-bulk-channel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;min-width:180px" onchange="onBulkChannelChange()"><option value="">route to...</option></select>
 
     <button class="btn p sm" id="arr-bulk-route-btn" onclick="bulkRouteChecked()" disabled>Route to Channel</button>
 
@@ -5761,7 +5797,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh" style="margin-top:28px">
 
-    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min — stoppages and recoveries logged here</div></div>
+    <div><h3 style="margin:0">Channel Health</h3><div class="sub">Checked every 10 min. Stoppages and recoveries logged here.</div></div>
 
     <button class="btn g sm" onclick="loadHealthLog()">Refresh</button>
 
@@ -5769,7 +5805,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   </div>
 
-  <div id="health-log-body"><div class="empty">No health events yet — first check runs 90 seconds after startup.</div></div>
+  <div id="health-log-body"><div class="empty">No health events yet. First check runs 90 seconds after startup.</div></div>
 
 </div>
 
@@ -5781,7 +5817,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   <div class="sh">
 
-    <div><h2>Log</h2><div class="sub">Persistent — up to 30 days of routes, genre edits, channel processing</div></div>
+    <div><h2>Log</h2><div class="sub">Persistent: up to 30 days of routes, genre edits, channel processing</div></div>
 
     <button class="btn g sm" onclick="clearLog()">Clear</button>
 
@@ -5831,7 +5867,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 <div id="page-settings" class="page">
 
-  <div class="sh"><div><h2>Settings</h2><div class="sub">Connect Plex, Tunarr, and Jellyfin — configure library mapping, routing behavior, security, and interface preferences</div></div></div>
+  <div class="sh"><div><h2>Settings</h2><div class="sub">Connect Plex, Tunarr, and Jellyfin. Configure library mapping, routing behavior, security, and interface preferences.</div></div></div>
 
 
 
@@ -5845,7 +5881,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div class="field">
 
-        <label>Font size — <span id="fs-label">15px</span></label>
+        <label>Font size: <span id="fs-label">15px</span></label>
 
         <input type="range" id="fs-slider" min="12" max="22" step="1" value="15"
 
@@ -5873,7 +5909,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div class="field">
 
-        <label>Channel ident opacity — <span id="ident-label">28%</span></label>
+        <label>Channel ident opacity: <span id="ident-label">28%</span></label>
 
         <input type="range" id="ident-slider" min="5" max="80" step="1" value="28"
 
@@ -6047,7 +6083,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
           3. Type this and press Enter: <code>localStorage.getItem('myPlexAccessToken')</code><br>
 
-          4. Copy the long string that appears — that's your token
+          4. Copy the long string that appears. That's your token.
 
         </div>
 
@@ -6095,7 +6131,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <div id="help-source-id" class="help-box">
 
-          An internal ID that tells Routarr which Plex server Tunarr is connected to. Click <strong>Detect</strong> after entering your Tunarr address — it will look this up automatically.
+          An internal ID that tells Routarr which Plex server Tunarr is connected to. Click <strong>Detect</strong> after entering your Tunarr address; it will look this up automatically.
 
         </div>
 
@@ -6161,7 +6197,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       Tell Routarr which Tunarr library corresponds to each of your Plex libraries.<br>
 
-      This is required for routing to work — Routarr uses these to find the correct programs.
+      This is required for routing to work. Routarr uses these to find the correct programs.
 
     </p>
 
@@ -6572,7 +6608,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <h3 id="modal-title">Add routing rule</h3>
 
     <div style="font-size:12px;color:var(--muted);background:var(--s2);border-radius:5px;padding:6px 10px;margin-bottom:14px;border:1px solid var(--bdr)">
-      <span style="opacity:.55">Rule name: </span><span id="r-name-preview" style="font-weight:500">—</span>
+      <span style="opacity:.55">Rule name: </span><span id="r-name-preview" style="font-weight:500">-</span>
     </div>
 
     <div class="fg" style="margin-bottom:12px">
@@ -6603,7 +6639,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Genres <span style="color:var(--muted);font-weight:400">(all must match — blank = any)</span></label>
+      <label>Genres <span style="color:var(--muted);font-weight:400">(all must match; blank = any)</span></label>
 
       <div style="display:flex;gap:6px">
 
@@ -6619,7 +6655,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Exclude genres <span style="color:var(--muted);font-weight:400">(optional — skip if item has any of these)</span></label>
+      <label>Exclude genres <span style="color:var(--muted);font-weight:400">(optional; skip if item has any of these)</span></label>
 
       <div style="display:flex;gap:6px">
 
@@ -6635,7 +6671,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Title contains <span style="color:var(--muted);font-weight:400">(comma-separated — any match includes; blank = any title)</span></label>
+      <label>Title contains <span style="color:var(--muted);font-weight:400">(comma-separated; any match includes; blank = any title)</span></label>
 
       <input id="r-title-filter" placeholder="e.g. GI Joe, Happy Tree Friends, Part 1" style="width:100%">
 
@@ -6643,7 +6679,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="field" style="margin-bottom:12px">
 
-      <label>Exclude if title contains <span style="color:var(--muted);font-weight:400">(comma-separated — any match excludes)</span></label>
+      <label>Exclude if title contains <span style="color:var(--muted);font-weight:400">(comma-separated; any match excludes)</span></label>
 
       <input id="r-title-excl" placeholder="e.g. Trailer, Teaser, Clip" style="width:100%">
 
@@ -6689,7 +6725,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <select id="proc-preset-sel" onchange="applyPreset()" style="flex:1;min-width:120px;font-size:13px">
 
-        <option value="">&#8212; presets &#8212;</option>
+        <option value="">Choose preset...</option>
 
       </select>
 
@@ -6707,7 +6743,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
         <input type="checkbox" id="proc-dedupe" checked>
 
-        <label for="proc-dedupe"><strong>Dedupe</strong> — remove duplicate programs</label>
+        <label for="proc-dedupe"><strong>Dedupe</strong>: remove duplicate programs</label>
 
       </div>
 
@@ -6766,6 +6802,34 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 <!-- Deactivate Flow Confirm Modal -->
+
+<!-- First-scan welcome modal -->
+
+<div id="first-scan-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.93);flex-direction:column;align-items:center;justify-content:center;gap:0">
+
+  <div style="text-align:center;max-width:540px;padding:0 28px">
+
+    <div id="fsm-quote" style="font-family:monospace;font-size:14px;font-weight:bold;letter-spacing:.08em;min-height:2.6em;transition:opacity .5s ease;opacity:1;margin-bottom:32px;color:var(--acc)"></div>
+
+    <p style="font-size:15px;line-height:1.8;color:var(--text);margin-bottom:8px">Your first scan is working through your entire library.<br>Go make a cup of your favourite hot beverage and enjoy a slice of cake while it all loads up.</p>
+
+    <p style="font-size:12px;color:var(--muted);margin-bottom:32px">This only happens once Subsequent scans look back 14 days.</p>
+
+    <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:18px">Would you like the guided tour when everything is ready?</p>
+
+    <div style="display:flex;gap:14px;justify-content:center">
+
+      <button onclick="fsmChoice(true)"  style="background:var(--acc);border:none;color:var(--bg);padding:11px 32px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.05em">Yes please</button>
+
+      <button onclick="fsmChoice(false)" style="background:none;border:1px solid var(--bdr);color:var(--muted);padding:11px 32px;border-radius:4px;font-size:14px;cursor:pointer">No thanks</button>
+
+    </div>
+
+  </div>
+
+</div>
+
+
 
 <div id="deactivate-modal" class="">
 
@@ -7240,7 +7304,7 @@ function _previewGeneratedTheme(dark, light, triggerBtn) {
 
   panel.innerHTML = '<div style="font-size:13px;font-weight:700;color:var(--txt);margin-bottom:3px">' + dark.label + '</div>'
 
-    + '<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Previewing — lock it in?</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:12px">Previewing. Lock it in?</div>'
 
     + '<div style="display:flex;gap:6px;margin-bottom:8px">'
 
@@ -7553,7 +7617,7 @@ async function loadHealthLog() {
 
     if (!rows.length) {
 
-      el.innerHTML = '<div class="empty">No health events yet — first check runs 90 seconds after startup.</div>';
+      el.innerHTML = '<div class="empty">No health events yet. First check runs 90 seconds after startup.</div>';
 
       return;
 
@@ -7735,7 +7799,7 @@ function _chanOpts(selectedId) {
 
   return allChannels.map(c =>
 
-    '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(c.name) + '">CH ' + c.number + ' — ' + escHtml(c.name) + '</option>'
+    '<option value="' + c.id + '"' + (c.id === selectedId ? ' selected' : '') + ' data-name="' + escHtml(c.name) + '">CH ' + c.number + ': ' + escHtml(c.name) + '</option>'
 
   ).join('');
 
@@ -7763,11 +7827,11 @@ async function checkHealth() {
 
   const tips = {
 
-    plex:     'Plex is not responding — check the URL and token in Settings → Connections',
+    plex:     'Plex is not responding. Check the URL and token in Settings, Connections.',
 
-    tunarr:   'Tunarr is not responding — check the URL in Settings → Connections',
+    tunarr:   'Tunarr is not responding. Check the URL in Settings, Connections.',
 
-    jellyfin: 'Jellyfin is not responding — check the URL in Settings → Connections',
+    jellyfin: 'Jellyfin is not responding. Check the URL in Settings, Connections.',
 
   };
 
@@ -7943,7 +8007,7 @@ async function loadArrivals(force=false) {
 
     arrivals = data;
 
-    // Pre-seed routeStatus from DB — already-routed items disappear from default view
+    // Pre-seed routeStatus from DB; already-routed items disappear from default view
 
     for (const item of arrivals) {
 
@@ -7963,11 +8027,11 @@ async function loadArrivals(force=false) {
 
     let sub = arrivals.length + ' items';
 
-    if (pending)  sub += ' — ' + pending + ' pending';
+    if (pending)  sub += ', ' + pending + ' pending';
 
     if (noRule)   sub += ', ' + noRule + ' no rule';
 
-    if (already)  sub += ', ' + already + ' done (hidden — check Show already routed)';
+    if (already)  sub += ', ' + already + ' done (hidden; check Show already routed)';
 
     document.getElementById('arr-sub').textContent = sub;
 
@@ -8099,7 +8163,7 @@ function renderArrivals() {
 
     const st = routeStatus[item.ratingKey];
 
-    // 'done' = routed this session; 'already' = was in DB at load — both hidden unless checkbox
+    // 'done' = routed this session; 'already' = was in DB at load; both hidden unless checkbox
 
     if ((st === 'done' || st === 'already') && !showRouted) return false;
 
@@ -8285,7 +8349,7 @@ function renderArrivals() {
 
     } else if (st==='done' || st==='already') {
 
-      // Routed (this session or previously) — show destination + re-route option
+      // Routed (this session or previously): show destination + re-route option
 
       const dest = item.routedTo ? ' → '+escHtml(item.routedTo) : '';
 
@@ -8531,7 +8595,7 @@ async function updateActionBar() {
 
     }
 
-    sel.innerHTML = '<option value="">— route to… —</option>' + _chanOpts();
+    sel.innerHTML = '<option value="">route to...</option>' + _chanOpts();
 
   }
 
@@ -8911,9 +8975,9 @@ async function saveGenres(rk) {
 
     const msg = 'Genres updated for "'+item.title+'"'
 
-      + (item.targetChannelName ? ' — now routes to '+item.targetChannelName : ' — no matching rule');
+      + (item.targetChannelName ? ': now routes to '+item.targetChannelName : ': no matching rule');
 
-    toast('Genres saved' + (item.targetChannelName ? ' — routes to ' + item.targetChannelName : ''));
+    toast('Genres saved' + (item.targetChannelName ? ': routes to ' + item.targetChannelName : ''));
 
     logAction(msg, true, {action_type:'genre', title: item.title, channel: item.targetChannelName||''});
 
@@ -9019,7 +9083,7 @@ async function routeOne(rk, sid, labels) {
 
       routeStatus[rk] = 'fail';
 
-      const detail = r.debug ? r.error + ' — ' + r.debug : (r.error||'unknown error');
+      const detail = r.debug ? r.error + ': ' + r.debug : (r.error||'unknown error');
 
       logAction('✗ Failed "' + (item?.title||rk) + '": ' + detail, false, {action_type:'route', title: item?.title||rk});
 
@@ -9071,7 +9135,7 @@ async function rerouteItem(rk, sid, labels) {
 
 async function dismissItem(rk) {
 
-  // Mark as done in DB without routing — hides item from default view
+  // Mark as done in DB without routing; hides item from default view
 
   const item = arrivals.find(a => a.ratingKey === rk);
 
@@ -9153,7 +9217,7 @@ async function routeAll() {
 
         } else {
 
-          const detail = r.debug ? r.error+' — '+r.debug : (r.error||'unknown');
+          const detail = r.debug ? r.error+': '+r.debug : (r.error||'unknown');
 
           logAction('✗ "'+r.title+'": '+detail, false, {action_type:'route', title: r.title});
 
@@ -9765,7 +9829,7 @@ async function processAll() {
 
         fail++;
 
-        logAction('Process All: "' + ch.name + '" failed — ' + r.error, false, {action_type:'process', channel: ch.name});
+        logAction('Process All: "' + ch.name + '" failed: ' + r.error, false, {action_type:'process', channel: ch.name});
 
       }
 
@@ -9773,7 +9837,7 @@ async function processAll() {
 
       fail++;
 
-      logAction('Process All: "' + ch.name + '" error — ' + e.message, false, {action_type:'process', channel: ch.name});
+      logAction('Process All: "' + ch.name + '" error: ' + e.message, false, {action_type:'process', channel: ch.name});
 
     }
 
@@ -9967,7 +10031,7 @@ async function processDirtySelected() {
 
         fail++;
 
-        logAction('Process Queue: "' + ch.name + '" failed — ' + r.error, false, {action_type: 'process', channel: ch.name});
+        logAction('Process Queue: "' + ch.name + '" failed: ' + r.error, false, {action_type: 'process', channel: ch.name});
 
       }
 
@@ -9975,7 +10039,7 @@ async function processDirtySelected() {
 
       fail++;
 
-      logAction('Process Queue: "' + ch.name + '" error — ' + e.message, false, {action_type: 'process', channel: ch.name});
+      logAction('Process Queue: "' + ch.name + '" error: ' + e.message, false, {action_type: 'process', channel: ch.name});
 
     }
 
@@ -10015,7 +10079,21 @@ async function updateScanStatus() {
 
     }
 
-    if (!s.scanning && _wasActive) { stopC64(); loadArrivals(true); return; }
+    if (!s.scanning && _wasActive) {
+
+      stopC64();
+
+      // If this was the first scan completing, honour the tour choice
+
+      if (s.first_scan_done && _fsmDismissed && _fsmWantTour) setTimeout(startTour, 800);
+
+      else if (s.first_scan_done && !_fsmDismissed) _fsmHide();
+
+      loadArrivals(true);
+
+      return;
+
+    }
 
     const sub = document.getElementById('arr-sub');
 
@@ -10097,7 +10175,7 @@ setInterval(updateScanStatus, 30000);
 
 
 
-// ── Activity — now the action log (client-side, no-op loader)
+// ── Activity: now the action log (client-side, no-op loader)
 
 function loadActivity() { renderLog(); }
 
@@ -10586,7 +10664,7 @@ function _miniRuleCard(r, active) {
     : 'background:none;border:1px solid var(--bdr);color:var(--muted)';
   return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bdr);flex-wrap:wrap">'
     +'<span style="font-size:9px;font-weight:700;color:'+srcColor+';background:'+srcColor+'22;border-radius:3px;padding:1px 5px;flex-shrink:0">'+srcLabel+'</span>'
-    +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+' — '+sectionPart+' → '+labelPart+'</div>'
+    +'<div style="flex:1;min-width:120px;font-size:12px">'+escHtml(r.name)+': '+sectionPart+' → '+labelPart+'</div>'
     +'<button onclick="flowBtnClick(this)" data-type="rule" data-id="'+r.id+'" data-name="'+escHtml(r.name)+'" data-active="'+(active?'1':'0')+'" style="flex-shrink:0;'+btnStyle+';padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap">'+(active?'⚡ On':'Off')+'</button>'
     +'</div>';
 }
@@ -10601,7 +10679,7 @@ function _pipelineCard(ch, rules, proc) {
         + activeRules.map(r=>_miniRuleCard(r,true)).join('')
         + inactiveRules.map(r=>_miniRuleCard(r,false)).join('')
         + '</div>'
-    : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No rules route to this channel yet — <button onclick="openAddRuleForCh(this.dataset.ch)" data-ch="'+escHtml(ch.id)+'" style="background:none;border:none;color:var(--acc);cursor:pointer;font-size:12px;padding:0;text-decoration:underline">+ Create a rule</button></div>';
+    : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No rules route to this channel yet. <button onclick="openAddRuleForCh(this.dataset.ch)" data-ch="'+escHtml(ch.id)+'" style="background:none;border:none;color:var(--acc);cursor:pointer;font-size:12px;padding:0;text-decoration:underline">+ Create a rule</button></div>';
 
   let procHtml;
   if (proc) {
@@ -10977,11 +11055,11 @@ function _renderRulesTable() {
 
     + '<td>' + (r.label ? r.label.split(',').map(g => '<span class="pill">' + g.trim() + '</span>').join('<span style="color:var(--muted);font-size:10px;padding:0 3px">+</span>') : '<span style="color:var(--muted);font-size:12px">any</span>') + '</td>'
 
-    + '<td>' + (r.label_excl ? r.label_excl.split(',').map(g => '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT ' + g.trim() + '</span>').join('<span style="color:var(--muted);font-size:10px;padding:0 3px">+</span>') : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
+    + '<td>' + (r.label_excl ? r.label_excl.split(',').map(g => '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT ' + g.trim() + '</span>').join('<span style="color:var(--muted);font-size:10px;padding:0 3px">+</span>') : '<span style="color:var(--muted);font-size:12px">-</span>') + '</td>'
 
-    + '<td>' + (r.title_filter ? '<span class="pill" style="background:var(--acc-bg,#2979ff1a);color:var(--acc)">“' + r.title_filter + '”</span>' : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
+    + '<td>' + (r.title_filter ? '<span class="pill" style="background:var(--acc-bg,#2979ff1a);color:var(--acc)">“' + r.title_filter + '”</span>' : '<span style="color:var(--muted);font-size:12px">-</span>') + '</td>'
 
-    + '<td>' + (r.title_excl ? '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT “' + r.title_excl + '”</span>' : '<span style="color:var(--muted);font-size:12px">—</span>') + '</td>'
+    + '<td>' + (r.title_excl ? '<span class="pill" style="background:var(--del-bg,#f443361a);color:var(--del,#f44336)">NOT “' + r.title_excl + '”</span>' : '<span style="color:var(--muted);font-size:12px">-</span>') + '</td>'
 
     + '<td style="font-size:13px">' + r.channel_name + '</td>'
 
@@ -11333,7 +11411,7 @@ function updateRuleName() {
 
   const preview = document.getElementById('r-name-preview');
 
-  if (preview) preview.textContent = makeRuleName(secVal, label, chName) || '—';
+  if (preview) preview.textContent = makeRuleName(secVal, label, chName) || '-';
 
 }
 
@@ -11603,6 +11681,102 @@ async function saveRule() {
 }
 
 
+
+
+
+// ── First-scan modal ----------------------------------------------------------------
+
+let _fsmWantTour = false;
+
+let _fsmDismissed = false;
+
+let _fsmQTimer = null;
+
+
+
+function _fsmStartQuotes() {
+
+  const el = document.getElementById('fsm-quote');
+
+  if (!el) return;
+
+  let qi = Math.floor(Math.random() * _C64Q.length), ci = 0;
+
+  function next() {
+
+    const e = document.getElementById('fsm-quote');
+
+    if (!e) { clearInterval(_fsmQTimer); _fsmQTimer = null; return; }
+
+    e.style.opacity = '0';
+
+    setTimeout(() => {
+
+      const e2 = document.getElementById('fsm-quote');
+
+      if (!e2) return;
+
+      qi = (qi + 1) % _C64Q.length;
+
+      ci = (ci + 1) % _C64C.length;
+
+      e2.textContent = _C64Q[qi];
+
+      e2.style.color = _C64C[ci];
+
+      e2.style.opacity = '1';
+
+    }, 500);
+
+  }
+
+  next();
+
+  _fsmQTimer = setInterval(next, 3500);
+
+}
+
+
+
+function _fsmHide() {
+
+  if (_fsmQTimer) { clearInterval(_fsmQTimer); _fsmQTimer = null; }
+
+  const m = document.getElementById('first-scan-modal');
+
+  if (m) m.style.display = 'none';
+
+}
+
+
+
+function fsmChoice(wantTour) {
+
+  _fsmWantTour = wantTour;
+
+  _fsmDismissed = true;
+
+  _fsmHide();
+
+}
+
+
+
+// Show modal immediately if first scan hasn't completed yet
+
+fetch('/api/scan/status').then(r => r.json()).then(s => {
+
+  if (!s.first_scan_done) {
+
+    const m = document.getElementById('first-scan-modal');
+
+    if (m) m.style.display = 'flex';
+
+    _fsmStartQuotes();
+
+  }
+
+}).catch(() => {});
 
 
 
