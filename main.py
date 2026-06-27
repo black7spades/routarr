@@ -74,6 +74,13 @@ DB_PATH = Path("/data/routarr.db")
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Migrate from old name on first run after rename
+_OLD_DB = DB_PATH.parent / "pilotarr.db"
+
+if _OLD_DB.exists() and not DB_PATH.exists():
+
+    _OLD_DB.rename(DB_PATH)
+
 
 
 def get_db():
@@ -3569,13 +3576,15 @@ async def tunarr_sync_status():
 
 async def setup_status():
 
-    configured = bool(cfg("plex_url") and cfg("tunarr_url"))
+    has_source = bool(cfg("plex_url") or cfg("jellyfin_url"))
+
+    configured = bool(cfg("tunarr_url") and has_source)
 
     missing = []
 
-    if not cfg("plex_url"):    missing.append("Plex URL")
+    if not has_source:         missing.append("Plex or Jellyfin URL")
 
-    if not cfg("plex_token"):  missing.append("Plex Token")
+    if cfg("plex_url") and not cfg("plex_token"):  missing.append("Plex Token")
 
     if not cfg("tunarr_url"):  missing.append("Tunarr URL")
 
@@ -5473,7 +5482,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <button class="btn g sm" onclick="loadArrivals(true)">Refresh</button>
 
-      <button class="btn g sm" id="scan-now-btn" onclick="scanNow()">Check Plex Now</button>
+      <button class="btn g sm" id="scan-now-btn" onclick="scanNow()">Scan Now</button>
 
       <button class="btn p" id="raBtn" onclick="routeAll()">Route All</button>
 
@@ -6021,13 +6030,15 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
 
 
-    <p style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:0 0 10px">Sources</p>
+    <p style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:0 0 4px">Sources</p>
+
+    <p style="font-size:12px;color:var(--muted);margin:0 0 12px">Fill in whichever you use. At least one is required.</p>
 
     <div class="fg" style="margin-bottom:14px">
 
       <div class="field">
 
-        <label>Jellyfin address <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <label>Jellyfin address</label>
 
         <input id="s-jellyfin_url" placeholder="http://192.168.1.x:8096">
 
@@ -6143,11 +6154,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <div class="field">
 
-        <label>Plex scan interval (minutes)</label>
+        <label>Scan interval (minutes)</label>
 
         <input id="s-scan_interval_minutes" type="number" min="5" placeholder="60">
 
-        <div class="hint">How often Routarr checks Plex automatically. Leave blank to disable.</div>
+        <div class="hint">How often Routarr scans for new content. Leave blank to disable.</div>
 
       </div>
 
@@ -6483,7 +6494,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <div class="help-mockup">
       <div class="hm-tag">Media tab: top controls</div>
       <div class="hm-row">
-        <span class="hm-lbl">Check Plex Now</span>
+        <span class="hm-lbl">Scan Now</span>
         <span class="hm-val">button</span>
         <span class="hm-note">&#8592; trigger an immediate scan right now</span>
       </div>
@@ -6530,7 +6541,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div class="hstep">
       <div class="hstep-n">1</div>
-      <div class="hstep-b">Click <strong>Check Plex Now</strong> to trigger a scan. Scans can take a few minutes depending on your library size and how quickly your servers respond. You can work with Routarr again once the scanning indicator at the top settles. New items appear in the list as they arrive. Items showing a channel name have a matching rule; items labelled &ldquo;no rule&rdquo; need a rule created first.</div>
+      <div class="hstep-b">Click <strong>Scan Now</strong> to trigger a scan. Scans can take a few minutes depending on your library size and how quickly your servers respond. You can work with Routarr again once the scanning indicator at the top settles. New items appear in the list as they arrive. Items showing a channel name have a matching rule; items labelled &ldquo;no rule&rdquo; need a rule created first.</div>
     </div>
     <div class="hstep">
       <div class="hstep-n">2</div>
@@ -10103,7 +10114,7 @@ async function updateScanStatus() {
 
     if (s.scanning) { btn.disabled = true; btn.textContent = 'Scanning…'; }
 
-    else { btn.disabled = false; btn.textContent = 'Check Plex Now'; }
+    else { btn.disabled = false; btn.textContent = 'Scan Now'; }
 
     const parts = [];
 
@@ -10165,7 +10176,7 @@ async function scanNow() {
 
     }, 2000);
 
-  } catch(e) { toast('Scan error: '+e.message); btn.disabled=false; btn.textContent='Check Plex Now'; }
+  } catch(e) { toast('Scan error: '+e.message); btn.disabled=false; btn.textContent='Scan Now'; }
 
 }
 
@@ -11869,7 +11880,7 @@ const TOUR = [
 
   {title:'11. Trigger a scan',
 
-   body:'Click <strong>Check Plex Now</strong> to start a scan. Scans can take a few minutes depending on library size and server speed. The scan is done and Routarr is ready to use again when the activity at the top stops. New items appear in the list as they are found.',
+   body:'Click <strong>Scan Now</strong> to start a scan. Scans can take a few minutes depending on library size and server speed. The scan is done and Routarr is ready to use again when the activity at the top stops. New items appear in the list as they are found.',
 
    target:'#scan-now-btn', action:null},
 
