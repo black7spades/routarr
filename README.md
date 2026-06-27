@@ -1,6 +1,8 @@
 # Routarr
 
-Tunarr turns your Plex or Jellyfin library into fake cable channels you can stream with any IPTV client. The catch: you have to manually drag content into each channel. Routarr removes that step. You define routing rules (match by genre, label, or library) and Routarr automatically drops matched items into the right Tunarr channel whenever something new lands on your server. Set up an auto-flow and it happens without you touching anything.
+So you've got your channels set up in Tunarr, playing your media from Plex and/or Jellyfin. But that channel is frozen in time. What if you could route new stuff from your media server into Tunarr automagically? 
+
+Now you can, with Routarr! Define routing rules (match by genre, label, or library), and Routarr automagically drops matched items into the right Tunarr channel whenever something new lands on your server. Set everything to auto, and you'll never have to flip around between your media server and Tunarr's settings ever again!
 
 ---
 
