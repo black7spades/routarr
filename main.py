@@ -6822,11 +6822,11 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <div id="fsm-quote" style="font-family:monospace;font-size:14px;font-weight:bold;letter-spacing:.08em;min-height:2.6em;transition:opacity .5s ease;opacity:1;margin-bottom:32px;color:var(--acc)"></div>
 
-    <p style="font-size:15px;line-height:1.8;color:var(--text);margin-bottom:8px">Your first scan is working through your entire library.<br>Go make a cup of your favourite hot beverage and enjoy a slice of cake while it all loads up.</p>
+    <p style="font-size:15px;line-height:1.8;color:var(--txt);margin-bottom:8px">Your first scan is working through your entire library.<br>Go make a cup of your favourite hot beverage and enjoy a slice of cake while it all loads up.</p>
 
     <p style="font-size:12px;color:var(--muted);margin-bottom:32px">This only happens once Subsequent scans look back 14 days.</p>
 
-    <p style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:18px">Would you like the guided tour when everything is ready?</p>
+    <p style="font-size:14px;font-weight:600;color:var(--txt);margin-bottom:18px">Would you like the guided tour when everything is ready?</p>
 
     <div style="display:flex;gap:14px;justify-content:center">
 
@@ -6984,7 +6984,7 @@ function applyPalette(id) {
 
   if (!p) return;
 
-  const r = document.documentElement;
+  const r = document.body;
 
   ['acc','acc2','green','yellow','blue','bg','s1','s2','s3','txt','muted','bdr'].forEach(k => {
 
@@ -7343,7 +7343,7 @@ function _previewGeneratedTheme(dark, light, triggerBtn) {
 
 function _applyPaletteDirect(p) {
 
-  const r = document.documentElement;
+  const r = document.body;
 
   ['acc','acc2','green','yellow','blue','bg','s1','s2','s3','txt','muted','bdr'].forEach(k => r.style.setProperty('--'+k, p[k]));
 
@@ -11986,7 +11986,7 @@ function _placeTip(s) {
 
     display: 'block', position: 'fixed', zIndex: '9001',
 
-    background: 'var(--card)', border: '1px solid var(--bdr)',
+    background: 'var(--s2)', border: '1px solid var(--bdr)',
 
     borderRadius: '12px', padding: '22px 20px',
 
