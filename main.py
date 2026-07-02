@@ -2490,6 +2490,8 @@ async def _run_scan_once():
 
                                 _pending.append(_i)
 
+                    _touched = set()
+
                     for _item in _pending:
 
                         if _item.get("source") == "jellyfin":
@@ -2504,11 +2506,63 @@ async def _run_scan_once():
 
                             logger.info(f"Auto-routed: {_item['title']} → {_r.get('channel')}")
 
+                            if _item.get("targetChannel"):
+
+                                _touched.add(_item["targetChannel"])
+
                     if _pending:
 
                         for _k in [f"plex_new_{days}", f"jf_new_{days}"]:
 
                             _cache.pop(_k, None)
+
+                    # Auto-process every channel that received new content and has
+
+                    # saved process settings, so its lineup is deduped/shuffled/padded
+
+                    # without any manual click.
+
+                    if _touched:
+
+                        try:
+
+                            with db_conn() as _pdb:
+
+                                _proc_rows = _pdb.execute("SELECT * FROM channel_proc_settings").fetchall()
+
+                            _proc_map = {row["channel_id"]: row for row in _proc_rows}
+
+                            for _cid in _touched:
+
+                                if not _cid or str(_cid).startswith("filler:"):
+
+                                    continue
+
+                                _ps = _proc_map.get(_cid)
+
+                                if not _ps:
+
+                                    continue
+
+                                try:
+
+                                    await _apply_channel_process(
+
+                                        _cid, _ps["channel_name"], bool(_ps["dedupe"]),
+
+                                        _ps["shuffle"], _ps["pad_minutes"],
+
+                                        _ps["preset_name"] or "", persist=False)
+
+                                    logger.info(f"Auto-processed channel {_cid}")
+
+                                except Exception as _pexc:
+
+                                    logger.warning(f"Auto-process failed for {_cid}: {_pexc}")
+
+                        except Exception as _pexc:
+
+                            logger.warning(f"Auto-process error: {_pexc}")
 
             except Exception as _exc:
 
@@ -4715,99 +4769,83 @@ async def set_plex_genres(rk: str, request: Request):
 
 
 
-@app.post("/api/channels/{channel_id}/process")
+async def _apply_channel_process(channel_id, ch_name, do_dedupe, shuffle, pad_mins, preset_nm="", persist=True):
 
-async def process_channel(channel_id: str, request: Request):
+    """Dedupe + shuffle + pad a channel's full lineup and save it back to Tunarr.
 
-    """Dedupe + shuffle + pad + save a channel's full lineup.
+    Shared by the manual /process endpoint and the auto-process step in the
 
-    Body: {dedupe: bool, shuffle: 'none'|'random'|'cyclic', pad_minutes: int}"""
+    scan loop. Raises RuntimeError if Tunarr rejects the new lineup."""
 
-    try:
+    async with httpx.AsyncClient() as c:
 
-        body       = await request.json()
-
-        do_dedupe  = body.get("dedupe", True)
-
-        shuffle    = body.get("shuffle", "cyclic")
-
-        pad_mins   = int(body.get("pad_minutes", 15))
-
-        ch_name    = body.get("channel_name") or channel_id
-
-        preset_nm  = str(body.get("preset_name") or "")
-
-        async with httpx.AsyncClient() as c:
-
-            items = await fetch_channel_lineup(c, channel_id)
+        items = await fetch_channel_lineup(c, channel_id)
 
 
 
-        orig_content = sum(1 for i in items if i.get("type") == "content")
+    orig_content = sum(1 for i in items if i.get("type") == "content")
 
-        stats: dict  = {"original": orig_content}
-
-
-
-        # 1. Dedupe
-
-        if do_dedupe:
-
-            items, removed = pp_dedupe(items)
-
-            stats["dupes_removed"] = removed
+    stats: dict  = {"original": orig_content}
 
 
 
-        # 2. Shuffle
+    # 1. Dedupe
 
-        if shuffle != "none":
+    if do_dedupe:
 
-            show_groups = _channel_show_groups.get(channel_id, {})
+        items, removed = pp_dedupe(items)
 
-            items = pp_shuffle(items, show_groups, shuffle)
-
-
-
-        # 3. Pad  (also drops old flex and recalculates)
-
-        items = pp_pad(items, pad_mins)
+        stats["dupes_removed"] = removed
 
 
 
-        stats["final_content"] = sum(1 for i in items if i.get("type") == "content")
+    # 2. Shuffle
 
-        stats["flex_items"]    = sum(1 for i in items if i.get("type") == "flex")
+    if shuffle != "none":
 
+        show_groups = _channel_show_groups.get(channel_id, {})
 
-
-        # 4. Save
-
-        tunarr = cfg("tunarr_url")
-
-        async with httpx.AsyncClient() as c:
-
-            r = await c.post(
-
-                f"{tunarr}/api/channels/{channel_id}/programming",
-
-                json={"type": "manual", "lineup": items, "append": False},
-
-                timeout=60)
-
-            if r.status_code not in (200, 201, 204):
-
-                return JSONResponse(
-
-                    {"error": f"Tunarr {r.status_code}: {r.text[:300]}"},
-
-                    status_code=500)
+        items = pp_shuffle(items, show_groups, shuffle)
 
 
 
-        _cache.pop("channels", None)
+    # 3. Pad  (also drops old flex and recalculates)
 
-        clear_channel_dirty(channel_id)
+    items = pp_pad(items, pad_mins)
+
+
+
+    stats["final_content"] = sum(1 for i in items if i.get("type") == "content")
+
+    stats["flex_items"]    = sum(1 for i in items if i.get("type") == "flex")
+
+
+
+    # 4. Save
+
+    tunarr = cfg("tunarr_url")
+
+    async with httpx.AsyncClient() as c:
+
+        r = await c.post(
+
+            f"{tunarr}/api/channels/{channel_id}/programming",
+
+            json={"type": "manual", "lineup": items, "append": False},
+
+            timeout=60)
+
+        if r.status_code not in (200, 201, 204):
+
+            raise RuntimeError(f"Tunarr {r.status_code}: {r.text[:300]}")
+
+
+
+    _cache.pop("channels", None)
+
+    clear_channel_dirty(channel_id)
+
+    if persist:
 
         with db_conn() as db:
 
@@ -4830,6 +4868,34 @@ async def process_channel(channel_id: str, request: Request):
                 " updated_at=excluded.updated_at",
 
                 (channel_id, ch_name, 1 if do_dedupe else 0, shuffle, pad_mins, preset_nm, int(time.time())))
+
+    return stats
+
+
+
+@app.post("/api/channels/{channel_id}/process")
+
+async def process_channel(channel_id: str, request: Request):
+
+    """Dedupe + shuffle + pad + save a channel's full lineup.
+
+    Body: {dedupe: bool, shuffle: 'none'|'random'|'cyclic', pad_minutes: int}"""
+
+    try:
+
+        body       = await request.json()
+
+        do_dedupe  = body.get("dedupe", True)
+
+        shuffle    = body.get("shuffle", "cyclic")
+
+        pad_mins   = int(body.get("pad_minutes", 15))
+
+        ch_name    = body.get("channel_name") or channel_id
+
+        preset_nm  = str(body.get("preset_name") or "")
+
+        stats = await _apply_channel_process(channel_id, ch_name, do_dedupe, shuffle, pad_mins, preset_nm)
 
         return {"ok": True, "stats": stats}
 
@@ -5390,9 +5456,9 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
     <button class="tab" data-page="flows" onclick="show('flows',this)">Flows</button>
 
-    <button class="tab" data-page="activity" onclick="show('activity',this);loadActivityLog()">Log</button>
+    <button class="tab" data-page="activity" onclick="show('activity',this)">Log</button>
 
-    <button class="tab" data-page="settings" onclick="show('settings',this);loadVersions();renderPaletteGrid()">Settings</button>
+    <button class="tab" data-page="settings" onclick="show('settings',this)">Settings</button>
 
     <button class="tab" data-page="help" onclick="show('help',this)">Help</button>
 
@@ -5616,6 +5682,64 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   </div>
 
+  <div id="rules-filter-bar" style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+
+    <input id="rules-search" placeholder="Filter…" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px;outline:none;width:200px" oninput="_applyRulesFilter()">
+
+    <select id="rules-search-field" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="_applyRulesFilter()">
+
+      <option value="name">Rule name</option>
+
+      <option value="section">Library</option>
+
+      <option value="genre">Genre</option>
+
+      <option value="channel">Channel</option>
+
+    </select>
+
+    <select id="rules-src-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="_applyRulesFilter()">
+
+      <option value="">All sources</option>
+
+      <option value="plex">Plex</option>
+
+      <option value="jellyfin">Jellyfin</option>
+
+    </select>
+
+    <select id="rules-auto-filter" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none" onchange="_applyRulesFilter()">
+
+      <option value="">All rules</option>
+
+      <option value="on">Auto on</option>
+
+      <option value="off">Auto off</option>
+
+    </select>
+
+    <select id="rules-sort-sel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none;margin-left:auto" onchange="_sortRulesFromSelect(this.value)">
+
+      <option value="">Sort by…</option>
+
+      <option value="name-1">Rule name A → Z</option>
+
+      <option value="name--1">Rule name Z → A</option>
+
+      <option value="source-1">Source A → Z</option>
+
+      <option value="section-1">Library A → Z</option>
+
+      <option value="channel-1">Plays on A → Z</option>
+
+      <option value="priority--1">Priority high → low</option>
+
+      <option value="priority-1">Priority low → high</option>
+
+    </select>
+
+  </div>
+
   <div class="scard">
 
     <table>
@@ -5654,31 +5778,37 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importRules(this)">
 
-      <div id="bulk-rule-bar" style="display:none;align-items:center;gap:6px;border-left:1px solid var(--bdr);padding-left:10px;margin-left:2px">
+    </div>
 
-        <span id="bulk-rule-count" style="font-size:12px;color:var(--muted)"></span>
+  </div>
 
-        <select id="bulk-rule-action" onchange="runBulkRuleAction(this)" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;cursor:pointer;outline:none">
-          <option value="">With selected…</option>
-          <option value="delete">&#x1F5D1; Delete</option>
-          <option value="export">&#x2193; Export</option>
-          <option value="channel">&#x21AA; Change channel…</option>
-          <option value="priority">&#x2605; Change priority…</option>
-        </select>
+  <div id="bulk-rule-bar" style="display:none;position:sticky;bottom:0;background:var(--s1);border-top:2px solid var(--acc);padding:10px 16px;margin:0 -16px;align-items:center;gap:10px;flex-wrap:wrap;z-index:10">
 
-        <div id="bulk-ch-row" style="display:none;align-items:center;gap:6px">
-          <select id="bulk-ch-sel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 9px;font-size:12px;outline:none"></select>
-          <button class="btn p sm" onclick="applyBulkChannel()">Apply</button>
-          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
-        </div>
+    <span id="bulk-rule-count" style="font-size:13px;font-weight:600;color:var(--txt);white-space:nowrap">0 selected</span>
 
-        <div id="bulk-pri-row" style="display:none;align-items:center;gap:6px">
-          <input id="bulk-pri-val" type="number" value="10" min="0" style="width:68px;background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:5px;padding:5px 8px;font-size:12px;outline:none">
-          <button class="btn p sm" onclick="applyBulkPriority()">Apply</button>
-          <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
-        </div>
+    <button class="btn g sm" style="font-size:12px" onclick="clearRuleSelection()">Clear</button>
 
-      </div>
+    <div style="flex:1"></div>
+
+    <select id="bulk-rule-action" onchange="runBulkRuleAction(this)" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;cursor:pointer;outline:none"><option value="">With selected…</option><option value="delete">&#x1F5D1; Delete</option><option value="export">&#x2193; Export</option><option value="channel">&#x21AA; Change channel…</option><option value="priority">&#x2605; Change priority…</option></select>
+
+    <div id="bulk-ch-row" style="display:none;align-items:center;gap:6px">
+
+      <select id="bulk-ch-sel" style="background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:13px;outline:none"></select>
+
+      <button class="btn p sm" onclick="applyBulkChannel()">Apply</button>
+
+      <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
+
+    </div>
+
+    <div id="bulk-pri-row" style="display:none;align-items:center;gap:6px">
+
+      <input id="bulk-pri-val" type="number" value="10" min="0" style="width:68px;background:var(--s2);border:1px solid var(--bdr);color:var(--txt);border-radius:6px;padding:6px 8px;font-size:13px;outline:none">
+
+      <button class="btn p sm" onclick="applyBulkPriority()">Apply</button>
+
+      <button class="btn g sm" onclick="_cancelBulkSub()">&#x2715;</button>
 
     </div>
 
@@ -6930,6 +7060,8 @@ let _rulesPage = 1;
 
 let _rulesPP = 25;
 
+let _rulesFilter = {q:'', field:'name', source:'', auto:''};
+
 let _rulesSelected = new Set();
 
 
@@ -7758,13 +7890,19 @@ async function loadActivityLog() {
 
 // ── Nav
 
-function show(name, btn) {
+const _PAGE_SLUGS = {arrivals:'media', rules:'rules', channels:'channels', flows:'flows', activity:'log', settings:'settings', help:'help'};
+
+const _SLUG_PAGES = {media:'arrivals', rules:'rules', channels:'channels', flows:'flows', log:'activity', settings:'settings', help:'help'};
+
+function show(name, btn, push=true) {
 
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
 
   document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
 
   document.getElementById('page-'+name).classList.add('on');
+
+  if (!btn) btn = document.querySelector('button.tab[data-page="' + name + '"]');
 
   if (btn) btn.classList.add('on');
 
@@ -7776,11 +7914,55 @@ function show(name, btn) {
 
   if (name==='rules')     { loadRules(); loadAutoRouteSetting(); }
 
-  if (name==='settings')  loadSettings();
+  if (name==='activity')  loadActivityLog();
+
+  if (name==='settings')  { loadSettings(); loadVersions(); renderPaletteGrid(); }
 
   // help is a static page
 
+  if (push) {
+
+    const slug = _PAGE_SLUGS[name] || 'media';
+
+    if (location.pathname !== '/' + slug) history.pushState({page:name}, '', '/' + slug);
+
+  }
+
 }
+
+
+
+function _pageFromPath() {
+
+  const slug = (location.pathname || '/').replace(/^\/+/, '').split('/')[0];
+
+  return _SLUG_PAGES[slug] || null;
+
+}
+
+
+
+function _routeFromURL() {
+
+  const page = _pageFromPath() || (localStorage.getItem('routarr-home-page') || 'arrivals');
+
+  const slug = _PAGE_SLUGS[page] || 'media';
+
+  history.replaceState({page}, '', '/' + slug);
+
+  show(page, null, false);
+
+}
+
+
+
+window.addEventListener('popstate', (e) => {
+
+  const page = (e.state && e.state.page) || _pageFromPath() || 'arrivals';
+
+  show(page, null, false);
+
+});
 
 
 
@@ -7788,11 +7970,7 @@ function goHome() {
 
   const pg = localStorage.getItem('routarr-home-page') || 'arrivals';
 
-  document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
-
-  const btn = document.querySelector('button.tab[data-page="' + pg + '"]');
-
-  show(pg, btn);
+  show(pg);
 
 }
 
@@ -11014,7 +11192,11 @@ function _renderRulesTable() {
 
   }
 
-  let rules = [..._rulesCache];
+  const allSecs = [..._libMapSections, ..._jfSections];
+
+  const secName = id => { const s = allSecs.find(s => s.id === id); return s ? s.title : (id === '*' ? 'Any' : id); };
+
+  let rules = _rulesCache.filter(r => _ruleMatchesFilter(r, secName));
 
   if (_rulesSort.col) {
 
@@ -11028,6 +11210,16 @@ function _renderRulesTable() {
 
   }
 
+  if (!rules.length) {
+
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No rules match your filter.</td></tr>';
+
+    _updateRulesPP(0, 1);
+
+    return;
+
+  }
+
   const total = rules.length;
 
   const pp = _rulesPP;
@@ -11037,10 +11229,6 @@ function _renderRulesTable() {
   if (_rulesPage > pages) _rulesPage = pages;
 
   const pageRules = pp > 0 ? rules.slice((_rulesPage - 1) * pp, _rulesPage * pp) : rules;
-
-  const allSecs = [..._libMapSections, ..._jfSections];
-
-  const secName = id => { const s = allSecs.find(s => s.id === id); return s ? s.title : (id === '*' ? 'Any' : id); };
 
   const srcBadge = src => {
 
@@ -11129,6 +11317,74 @@ function sortRules(col) {
   if (_rulesSort.col === col) _rulesSort.dir *= -1;
 
   else { _rulesSort.col = col; _rulesSort.dir = 1; }
+
+  _rulesPage = 1;
+
+  const sel = document.getElementById('rules-sort-sel');
+
+  if (sel) sel.value = col + '-' + _rulesSort.dir;
+
+  _renderRulesTable();
+
+}
+
+function _sortRulesFromSelect(v) {
+
+  if (!v) { _rulesSort = {col:null,dir:1}; _rulesPage = 1; _renderRulesTable(); return; }
+
+  const i = v.lastIndexOf('-');
+
+  _rulesSort = {col: v.slice(0, i), dir: parseInt(v.slice(i + 1)) || 1};
+
+  _rulesPage = 1;
+
+  _renderRulesTable();
+
+}
+
+function _ruleMatchesFilter(r, secName) {
+
+  const f = _rulesFilter;
+
+  if (f.source && (r.source || 'plex') !== f.source) return false;
+
+  if (f.auto === 'on' && !_autoRouteRules.has(String(r.id))) return false;
+
+  if (f.auto === 'off' && _autoRouteRules.has(String(r.id))) return false;
+
+  if (f.q) {
+
+    let hay = '';
+
+    if (f.field === 'name') hay = r.name || '';
+
+    else if (f.field === 'section') hay = secName(r.section_id) || '';
+
+    else if (f.field === 'genre') hay = (r.label || '') + ' ' + (r.label_excl || '');
+
+    else if (f.field === 'channel') hay = r.channel_name || '';
+
+    if (!hay.toLowerCase().includes(f.q)) return false;
+
+  }
+
+  return true;
+
+}
+
+function _applyRulesFilter() {
+
+  _rulesFilter = {
+
+    q: (document.getElementById('rules-search').value || '').trim().toLowerCase(),
+
+    field: document.getElementById('rules-search-field').value,
+
+    source: document.getElementById('rules-src-filter').value,
+
+    auto: document.getElementById('rules-auto-filter').value
+
+  };
 
   _rulesPage = 1;
 
@@ -11247,6 +11503,20 @@ function _updateBulkBar() {
   const lbl = document.getElementById('bulk-rule-count');
 
   if (lbl) lbl.textContent = n + ' selected';
+
+}
+
+function clearRuleSelection() {
+
+  _rulesSelected.clear();
+
+  document.querySelectorAll('.rule-chk').forEach(c => c.checked = false);
+
+  const allChk = document.getElementById('rules-chk-all');
+
+  if (allChk) { allChk.checked = false; allChk.indeterminate = false; }
+
+  _updateBulkBar();
 
 }
 
@@ -11793,7 +12063,7 @@ fetch('/api/scan/status').then(r => r.json()).then(s => {
 
 // Init
 
-loadArrivals();
+_routeFromURL();
 
 updateScanStatus();
 
@@ -12132,6 +12402,26 @@ async function saveAuth() {
 async def frontend():
 
     return HTMLResponse(HTML)
+
+
+
+# Each page has its own URL. They all serve the same single-page app, which
+
+# reads the path on load and shows the matching tab (client-side routing).
+
+_PAGE_PATHS = ("media", "rules", "channels", "flows", "log", "settings", "help")
+
+
+
+@app.get("/{page}", response_class=HTMLResponse)
+
+async def frontend_page(page: str):
+
+    if page in _PAGE_PATHS:
+
+        return HTMLResponse(HTML)
+
+    return JSONResponse({"error": "Not found"}, status_code=404)
 
 
 
