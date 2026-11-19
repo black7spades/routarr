@@ -1262,19 +1262,13 @@ async def jellyfin_lib_index(client, tunarr_lib_id: str) -> dict:
 
     try:
 
-        r = await client.get(f"{tunarr}/api/media-libraries/{tunarr_lib_id}/programs", timeout=120)
-
-        r.raise_for_status()
-
         index = {}
 
-        for p in r.json():
+        for p in await _tunarr_library_programs(client, tunarr, tunarr_lib_id):
 
-            for ident in p.get("program", {}).get("identifiers", []):
+            for jid in _program_source_ids(p, "jellyfin"):
 
-                if ident.get("type") == "jellyfin":
-
-                    index[ident["id"]] = p
+                index[jid] = _program_entry(p)
 
         cache_set(f"jflib_{tunarr_lib_id}", index)
 
@@ -1484,6 +1478,126 @@ async def jellyfin_new_content(client, days: int = 14) -> list:
 
 
 
+def _programs_from_response(data) -> tuple[list, Optional[int]]:
+
+    """Pull the program list (and total, if paginated) out of a Tunarr response.
+
+    Older Tunarr returns a bare list; newer builds wrap it in an object."""
+
+    if isinstance(data, list):
+
+        return [p for p in data if isinstance(p, dict)], None
+
+    if isinstance(data, dict):
+
+        for key in ("programs", "items", "result", "results", "data", "content"):
+
+            if isinstance(data.get(key), list):
+
+                total = data.get("total") or data.get("totalCount") or data.get("count")
+
+                try:
+
+                    total = int(total) if total is not None else None
+
+                except (TypeError, ValueError):
+
+                    total = None
+
+                return [p for p in data[key] if isinstance(p, dict)], total
+
+    return [], None
+
+
+
+async def _tunarr_library_programs(client, tunarr: str, lib_id: str) -> list:
+
+    """Fetch every program in a Tunarr media library, whatever the response shape."""
+
+    url = f"{tunarr}/api/media-libraries/{lib_id}/programs"
+
+    r = await client.get(url, timeout=120)
+
+    r.raise_for_status()
+
+    out, total = _programs_from_response(r.json())
+
+    # Paginated response: keep fetching until we have them all.
+
+    guard = 0
+
+    while total is not None and len(out) < total and guard < 500:
+
+        guard += 1
+
+        r = await client.get(url, params={"offset": len(out), "limit": 1000}, timeout=120)
+
+        r.raise_for_status()
+
+        batch, _ = _programs_from_response(r.json())
+
+        if not batch:
+
+            break
+
+        out.extend(batch)
+
+    return out
+
+
+
+def _program_source_ids(p: dict, source: str) -> list:
+
+    """Source item IDs (Plex ratingKey / Jellyfin item id) a Tunarr program maps to.
+
+    Handles both the older `identifiers` list and the newer `externalIds` list,
+
+    with the program either at the top level or nested under `program`."""
+
+    prog = p.get("program") if isinstance(p.get("program"), dict) else p
+
+    ids = []
+
+    for key in ("identifiers", "externalIds"):
+
+        for ident in (prog.get(key) or []):
+
+            if not isinstance(ident, dict):
+
+                continue
+
+            if source in (ident.get("type"), ident.get("source"), ident.get("sourceType")):
+
+                v = ident.get("id") or ident.get("externalKey") or ident.get("key")
+
+                if v:
+
+                    ids.append(str(v))
+
+    if not ids and prog.get("sourceType") == source and prog.get("externalKey"):
+
+        ids.append(str(prog["externalKey"]))
+
+    return ids
+
+
+
+def _program_entry(p: dict) -> dict:
+
+    """The dict a lib index stores: needs top-level `id` and `duration`."""
+
+    prog = p.get("program") if isinstance(p.get("program"), dict) else {}
+
+    entry = p if p.get("id") else (prog if prog.get("id") else p)
+
+    if "duration" not in entry:
+
+        entry = {**entry, "duration": p.get("duration") or prog.get("duration") or 0}
+
+    return entry
+
+
+
 async def tunarr_lib_index(client, lib_id):
 
     cached = cache_get(f"lib_{lib_id}")
@@ -1498,23 +1612,17 @@ async def tunarr_lib_index(client, lib_id):
 
         raise ValueError("Tunarr URL not configured. Go to Settings.")
 
-    r = await client.get(f"{tunarr}/api/media-libraries/{lib_id}/programs", timeout=120)
-
-    r.raise_for_status()
-
     index = {}
 
-    for p in r.json():
+    for p in await _tunarr_library_programs(client, tunarr, lib_id):
 
-        for ident in p.get("program", {}).get("identifiers", []):
+        # Index by plex ratingKey; do NOT filter by sourceId because
 
-            # Index by plex ratingKey (type=="plex" is the right discriminator);
+        # plex_source_id may be stale/wrong.
 
-            # do NOT filter by sourceId because plex_source_id may be stale/wrong.
+        for rk in _program_source_ids(p, "plex"):
 
-            if ident.get("type") == "plex":
-
-                index[ident["id"]] = p
+            index[rk] = _program_entry(p)
 
     cache_set(f"lib_{lib_id}", index)
 
@@ -2954,6 +3062,12 @@ app.add_middleware(_SecurityHeadersMW)
 
 
 def _err(e: Exception) -> JSONResponse:
+
+    # Log the full traceback so failures like "'str' object has no attribute
+
+    # 'get'" point at the exact line instead of just the message.
+
+    logger.error("Request failed: %s", e, exc_info=e)
 
     return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -5407,8 +5521,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   nav::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:2px}
   .tab{padding:6px 11px;font-size:12px;white-space:nowrap}
   #sync-bar{flex:1;min-width:0;padding:0;max-width:240px}
-  .logout-btn{margin-left:auto}
-  .hdr-controls{flex-shrink:0}
+  .hdr-controls{flex-shrink:0;margin-left:auto}
   .status{display:none}
   .icon-btn{padding:6px}
   main{padding:12px 10px}
@@ -5464,8 +5577,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   </nav>
 
-  <button class="logout-btn" onclick="doLogout()" title="Log out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
-
   <div id="sync-bar">
 
     <span class="sync-lbl" id="sync-lbl">Syncing Tunarr…</span>
@@ -5491,6 +5602,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark">&#9790;</button>
 
     <button class="icon-btn" id="tour-btn" onclick="startTour()" title="Start guided tour" style="font-size:14px">&#9432;</button>
+
+    <button class="logout-btn" onclick="doLogout()" title="Log out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
 
   </div>
 
