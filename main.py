@@ -5521,8 +5521,7 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
   nav::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:2px}
   .tab{padding:6px 11px;font-size:12px;white-space:nowrap}
   #sync-bar{flex:1;min-width:0;padding:0;max-width:240px}
-  .logout-btn{margin-left:auto}
-  .hdr-controls{flex-shrink:0}
+  .hdr-controls{flex-shrink:0;margin-left:auto}
   .status{display:none}
   .icon-btn{padding:6px}
   main{padding:12px 10px}
@@ -5578,8 +5577,6 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
 
   </nav>
 
-  <button class="logout-btn" onclick="doLogout()" title="Log out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
-
   <div id="sync-bar">
 
     <span class="sync-lbl" id="sync-lbl">Syncing Tunarr…</span>
@@ -5605,6 +5602,8 @@ select.days{background:var(--s2);border:1px solid var(--bdr);color:var(--txt);bo
     <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark">&#9790;</button>
 
     <button class="icon-btn" id="tour-btn" onclick="startTour()" title="Start guided tour" style="font-size:14px">&#9432;</button>
+
+    <button class="logout-btn" onclick="doLogout()" title="Log out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
 
   </div>
 
